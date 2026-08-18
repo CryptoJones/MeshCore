@@ -99,11 +99,30 @@ Two workflows keep it current:
 
 | Workflow | Trigger | Does |
 |---|---|---|
-| `sync-upstream.yml` | daily + manual | Finds the newest upstream `companion-v*` tag, merges it onto a `sync/…` branch, **builds the firmware to prove it still compiles**, then opens a PR. On conflict it opens an issue instead and fails loudly. |
+| `sync-upstream.yml` | daily + manual | Finds the newest upstream `companion-v*` tag, merges it onto a `sync/…` branch, **builds the firmware to prove it still compiles**, then opens a PR. **Patch bumps merge themselves; anything else waits for review.** On conflict it opens an issue instead and fails loudly. |
 | `release-usb-ble.yml` | push to `main` + manual | Derives the version from the nearest upstream `companion-v*` tag, builds, and creates or refreshes the `wio-l1-usb-ble-<version>` release. |
 
-Upstream bumps are deliberately **proposed, not auto-merged** — a firmware release is worth a
-human glance. Merging the PR is what publishes the new binaries.
+### What merges itself, and what doesn't
+
+A **forward patch bump inside the same major.minor** (`v1.17.1` → `v1.17.2`) is merged
+automatically, which publishes a refreshed release without anyone touching it. Upstream patch
+releases are bug fixes against a version already running here, so the risk is low and the CI
+build has already proven the firmware still compiles against the merge.
+
+Everything else stops for a human:
+
+| Case | Result |
+|---|---|
+| `v1.17.1` → `v1.17.2` | **auto-merge** |
+| `v1.17.1` → `v1.18.0` (minor) | PR left open |
+| `v1.17.1` → `v2.0.0` (major) | PR left open |
+| prerelease tag (`v1.17.2-rc1`) | PR left open |
+| version moves backwards | PR left open |
+| current or new version unparseable | PR left open |
+| merge conflict | no PR at all — issue opened, workflow fails |
+
+The classifier **fails closed**: anything it cannot confidently identify as a forward patch
+bump is treated as needing review.
 
 ## Building it yourself
 
