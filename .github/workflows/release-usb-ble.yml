@@ -1,0 +1,119 @@
+# Builds the combined USB CLI + BLE firmware and publishes it as a release.
+# Runs when a sync lands on main, or on demand. The release tag is derived from
+# the nearest upstream companion-v* tag, so it tracks upstream versioning.
+name: Release USB+BLE Firmware
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'examples/**'
+      - 'variants/**'
+      - 'platformio.ini'
+      - 'build.sh'
+      - '.github/workflows/release-usb-ble.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  UPSTREAM: https://github.com/meshcore-dev/MeshCore.git
+  TARGET_ENV: WioTrackerL1_companion_radio_usb_ble
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone Repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Derive version from nearest upstream companion tag
+        id: ver
+        run: |
+          set -euo pipefail
+          git remote add upstream "$UPSTREAM" 2>/dev/null || true
+          git fetch upstream --tags --prune --force
+          TAG=$(git describe --tags --match 'companion-v*' --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$TAG" ]; then
+            echo "::error::No companion-v* tag is reachable from HEAD; cannot derive a version."
+            exit 1
+          fi
+          VERSION="${TAG#companion-}"
+          echo "version=$VERSION"                     >> "$GITHUB_OUTPUT"
+          echo "release_tag=wio-l1-usb-ble-$VERSION"  >> "$GITHUB_OUTPUT"
+          echo "Building $VERSION (from $TAG)"
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-environment
+
+      - name: Build firmware
+        env:
+          FIRMWARE_VERSION: ${{ steps.ver.outputs.version }}
+        run: /usr/bin/env bash build.sh build-firmware "$TARGET_ENV"
+
+      - name: Confirm artifacts exist
+        run: |
+          set -euo pipefail
+          ls -la out/
+          test -n "$(ls out/*.uf2 2>/dev/null)" || { echo "::error::no .uf2 produced"; exit 1; }
+
+      - name: Publish or refresh the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.ver.outputs.release_tag }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          {
+            printf '%s\n' "Companion firmware for the **Seeed Studio Wio Tracker L1** with the **USB serial"
+            printf '%s\n' "CLI and Bluetooth LE enabled at the same time**."
+            printf '\n'
+            printf '%s\n' "Upstream ships these as mutually exclusive builds -- flash \`_usb\` and you lose the"
+            printf '%s\n' "phone app, flash \`_ble\` and you lose scriptable CLI access. This build gives you both."
+            printf '\n'
+            printf '%s\n' "### Flashing (macOS)"
+            printf '\n'
+            printf '%s\n' '```sh'
+            printf '%s\n' "stty -f /dev/cu.usbmodemXXXX 1200          # 1200-baud touch -> UF2 bootloader"
+            printf '%s\n' "cp *.uf2 \"/Volumes/TRACKER L1/\""
+            printf '%s\n' '```'
+            printf '\n'
+            printf '%s\n' "The volume ejecting itself is the success signal. Radio settings survive the reflash."
+            printf '\n'
+            printf '%s\n' "### BLE pairing PIN"
+            printf '\n'
+            printf '%s\n' "\`BLE_PIN_CODE=123456\` in the build is a **sentinel, not the PIN**. On a board with a"
+            printf '%s\n' "display the firmware rolls a random 6-digit PIN each boot and shows it on the OLED."
+            printf '%s\n' "To pin it permanently: \`meshcore-cli -s <port> set pin 123456\`, then **reboot** --"
+            printf '%s\n' "\`_active_ble_pin\` is only read at startup."
+            printf '\n'
+            printf '%s\n' "### Notes"
+            printf '\n'
+            printf '%s\n' "Both clients share one event stream: \`writeFrame()\` fans out to every enabled"
+            printf '%s\n' "interface, so a phone on BLE and a CLI session on USB each see all frames."
+            printf '\n'
+            printf '%s\n' "Built from upstream [meshcore-dev/MeshCore](https://github.com/meshcore-dev/MeshCore)"
+            printf '%s\n' "\`companion-$VERSION\` plus one build environment. MeshCore is MIT, (c) 2025 Scott Powell."
+            printf '\n'
+            printf '%s\n' "**Unofficial community build -- do not report issues with it to upstream MeshCore.**"
+            printf '\n'
+            printf '%s\n' "---"
+            printf '\n'
+            printf '%s\n' "*Proudly Made in Nebraska. Go Big Red! 🌽 <https://xkcd.com/2347/>*"
+          } > /tmp/release_notes.md
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Refreshing existing release $RELEASE_TAG"
+            gh release upload "$RELEASE_TAG" out/* --clobber
+            gh release edit "$RELEASE_TAG" --notes-file /tmp/release_notes.md
+          else
+            echo "Creating release $RELEASE_TAG"
+            gh release create "$RELEASE_TAG" out/* \
+              --target "$GITHUB_SHA" \
+              --title "Wio Tracker L1 — Companion USB CLI + BLE ($VERSION)" \
+              --notes-file /tmp/release_notes.md
+          fi

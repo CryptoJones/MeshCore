@@ -85,6 +85,26 @@ and a `meshcore-cli` session over USB will both see every frame. That is the int
 design, not a bug, but it does mean the two clients share one event stream rather than
 getting isolated sessions.
 
+## Staying in sync with upstream
+
+The build environment lives in its **own** variant directory,
+`variants/wio-tracker-l1-usb-ble/platformio.ini`, rather than being appended to upstream's
+`variants/wio-tracker-l1/platformio.ini`. `platformio.ini` pulls in every
+`variants/*/platformio.ini` through `extra_configs`, so the env is still discovered and can
+still `extends = WioTrackerL1` across files — but **this fork modifies no source file
+upstream edits**, so upstream releases merge without conflict. `README.md` is the sole
+exception, since the fork note has to live somewhere visible.
+
+Two workflows keep it current:
+
+| Workflow | Trigger | Does |
+|---|---|---|
+| `sync-upstream.yml` | daily + manual | Finds the newest upstream `companion-v*` tag, merges it onto a `sync/…` branch, **builds the firmware to prove it still compiles**, then opens a PR. On conflict it opens an issue instead and fails loudly. |
+| `release-usb-ble.yml` | push to `main` + manual | Derives the version from the nearest upstream `companion-v*` tag, builds, and creates or refreshes the `wio-l1-usb-ble-<version>` release. |
+
+Upstream bumps are deliberately **proposed, not auto-merged** — a firmware release is worth a
+human glance. Merging the PR is what publishes the new binaries.
+
 ## Building it yourself
 
 ```sh
