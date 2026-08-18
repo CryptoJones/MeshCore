@@ -14,6 +14,10 @@ permissions:
   issues: write
 
 env:
+  # gh resolves to the PARENT repo inside a fork clone. Without this, every gh
+  # call targets meshcore-dev/MeshCore -- the release step actually attempted to
+  # publish a release UPSTREAM and only their permissions stopped it (HTTP 403).
+  GH_REPO: ${{ github.repository }}
   UPSTREAM: https://github.com/meshcore-dev/MeshCore.git
   TARGET_ENV: WioTrackerL1_companion_radio_usb_ble
 
