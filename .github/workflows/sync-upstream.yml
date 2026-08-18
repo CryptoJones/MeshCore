@@ -1,0 +1,141 @@
+# Watches upstream meshcore-dev/MeshCore for new companion firmware releases and
+# proposes the merge as a PR. Never pushes to main by itself -- an upstream bump
+# is exactly the kind of change that deserves eyes on it.
+name: Sync Upstream Companion Release
+
+on:
+  schedule:
+    - cron: '17 13 * * *'   # daily, 13:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  UPSTREAM: https://github.com/meshcore-dev/MeshCore.git
+  TARGET_ENV: WioTrackerL1_companion_radio_usb_ble
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone Repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Find latest upstream companion tag
+        id: upstream
+        run: |
+          set -euo pipefail
+          git remote add upstream "$UPSTREAM" 2>/dev/null || true
+          git fetch upstream --tags --prune --force
+          TAG=$(git tag -l 'companion-v*' | sort -V | tail -1)
+          if [ -z "$TAG" ]; then echo "no companion tags found" >&2; exit 1; fi
+          echo "tag=$TAG"                       >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#companion-}"      >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-list -n1 "$TAG")" >> "$GITHUB_OUTPUT"
+          echo "Latest upstream companion tag: $TAG"
+
+      - name: Is it already merged?
+        id: check
+        run: |
+          set -euo pipefail
+          if git merge-base --is-ancestor "${{ steps.upstream.outputs.sha }}" origin/main; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            echo "main already contains ${{ steps.upstream.outputs.tag }} -- nothing to do."
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+            echo "main is behind ${{ steps.upstream.outputs.tag }}."
+          fi
+
+      - name: Merge upstream onto a sync branch
+        id: merge
+        if: steps.check.outputs.needed == 'true'
+        run: |
+          set -euo pipefail
+          BRANCH="sync/${{ steps.upstream.outputs.tag }}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH" origin/main
+          if git merge --no-edit "${{ steps.upstream.outputs.tag }}"; then
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "conflict=true"  >> "$GITHUB_OUTPUT"
+            git merge --abort || true
+          fi
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Report conflict and stop
+        if: steps.merge.outputs.conflict == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          set -euo pipefail
+          TITLE="Upstream sync conflict: $TAG"
+          OPEN=$(gh issue list --search "$TITLE in:title" --state open --json number --jq '.[0].number' || true)
+          if [ -n "$OPEN" ]; then
+            echo "Issue #$OPEN already tracks this."
+          else
+            {
+              printf '%s\n' "The scheduled upstream sync could not merge \`$TAG\` cleanly and needs a human."
+              printf '\n'
+              printf '%s\n' "This fork keeps its build environment in its own directory"
+              printf '%s\n' "(\`variants/wio-tracker-l1-usb-ble/\`) so it touches no file upstream edits."
+              printf '%s\n' "**\`README.md\` is the one exception** -- the fork note lives at its top, so that"
+              printf '%s\n' "is the most likely conflict."
+              printf '\n'
+              printf '%s\n' "Resolve locally with:"
+              printf '\n'
+              printf '%s\n' '```sh'
+              printf '%s\n' "git fetch upstream --tags"
+              printf '%s\n' "git checkout -B sync-fix origin/main"
+              printf '%s\n' "git merge $TAG"
+              printf '%s\n' "# resolve, then verify the firmware still builds:"
+              printf '%s\n' "FIRMWARE_VERSION=${TAG#companion-} sh build.sh build-firmware $TARGET_ENV"
+              printf '%s\n' '```'
+              printf '\n'
+              printf '%s\n' "Open a PR from that branch; merging it publishes a refreshed release."
+            } > /tmp/issue_body.md
+            gh issue create --title "$TITLE" --body-file /tmp/issue_body.md
+          fi
+          echo "::error::Merge conflict against $TAG -- issue opened."
+          exit 1
+
+      - name: Setup Build Environment
+        if: steps.merge.outputs.conflict == 'false'
+        uses: ./.github/actions/setup-build-environment
+
+      - name: Verify the firmware still builds
+        if: steps.merge.outputs.conflict == 'false'
+        env:
+          FIRMWARE_VERSION: ${{ steps.upstream.outputs.version }}
+        run: /usr/bin/env bash build.sh build-firmware "$TARGET_ENV"
+
+      - name: Push branch and open PR
+        if: steps.merge.outputs.conflict == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.merge.outputs.branch }}
+          TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git push -f origin "$BRANCH"
+          OPEN=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' || true)
+          if [ -n "$OPEN" ]; then echo "PR #$OPEN already open."; exit 0; fi
+          {
+            printf '%s\n' "Merges upstream \`$TAG\` into this fork."
+            printf '\n'
+            printf '%s\n' "The combined USB CLI + BLE environment (\`$TARGET_ENV\`) was rebuilt"
+            printf '%s\n' "against this merge in CI and **compiles**."
+            printf '\n'
+            printf '%s\n' "Merging this publishes a refreshed firmware release automatically."
+            printf '\n'
+            printf '%s\n' "Opened by the scheduled \`sync-upstream\` workflow."
+            printf '\n'
+            printf '%s\n' "Proudly Made in Nebraska. Go Big Red! 🌽 https://xkcd.com/2347/"
+          } > /tmp/pr_body.md
+          gh pr create --base main --head "$BRANCH" --title "Sync upstream $TAG" --body-file /tmp/pr_body.md
