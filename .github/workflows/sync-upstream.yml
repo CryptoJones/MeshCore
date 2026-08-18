@@ -55,6 +55,33 @@ jobs:
             echo "main is behind ${{ steps.upstream.outputs.tag }}."
           fi
 
+      - name: Classify the version bump
+        id: bump
+        if: steps.check.outputs.needed == 'true'
+        run: |
+          set -euo pipefail
+          CUR=$(git describe --tags --match 'companion-v*' --abbrev=0 origin/main 2>/dev/null || echo "")
+          CUR="${CUR#companion-}"
+          NEW="${{ steps.upstream.outputs.version }}"
+          KIND=review
+          c="${CUR#v}"; n="${NEW#v}"
+          if [[ "$c" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && [[ "$n" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            cM=${c%%.*}; nM=${n%%.*}
+            cR=${c#*.};  nR=${n#*.}
+            cm=${cR%%.*}; nm=${nR%%.*}
+            cp=${cR##*.}; np=${nR##*.}
+            # Auto-merge ONLY a forward patch bump inside the same major.minor.
+            # Everything else -- minor, major, prerelease, a backwards move, an
+            # unparseable version, or an undeterminable current version -- falls
+            # back to human review. Failing closed is the point.
+            if [ "$cM" = "$nM" ] && [ "$cm" = "$nm" ] && [ "$np" -gt "$cp" ]; then
+              KIND=auto
+            fi
+          fi
+          echo "current=$CUR" >> "$GITHUB_OUTPUT"
+          echo "kind=$KIND"   >> "$GITHUB_OUTPUT"
+          echo "$CUR -> $NEW classified as: $KIND"
+
       - name: Merge upstream onto a sync branch
         id: merge
         if: steps.check.outputs.needed == 'true'
@@ -119,27 +146,50 @@ jobs:
           FIRMWARE_VERSION: ${{ steps.upstream.outputs.version }}
         run: /usr/bin/env bash build.sh build-firmware "$TARGET_ENV"
 
-      - name: Push branch and open PR
+      - name: Push branch, open PR, and auto-merge patch bumps
         if: steps.merge.outputs.conflict == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
           BRANCH: ${{ steps.merge.outputs.branch }}
           TAG: ${{ steps.upstream.outputs.tag }}
+          KIND: ${{ steps.bump.outputs.kind }}
+          CUR: ${{ steps.bump.outputs.current }}
+          NEW: ${{ steps.upstream.outputs.version }}
         run: |
           set -euo pipefail
           git push -f origin "$BRANCH"
-          OPEN=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' || true)
-          if [ -n "$OPEN" ]; then echo "PR #$OPEN already open."; exit 0; fi
-          {
-            printf '%s\n' "Merges upstream \`$TAG\` into this fork."
-            printf '\n'
-            printf '%s\n' "The combined USB CLI + BLE environment (\`$TARGET_ENV\`) was rebuilt"
-            printf '%s\n' "against this merge in CI and **compiles**."
-            printf '\n'
-            printf '%s\n' "Merging this publishes a refreshed firmware release automatically."
-            printf '\n'
-            printf '%s\n' "Opened by the scheduled \`sync-upstream\` workflow."
-            printf '\n'
-            printf '%s\n' "Proudly Made in Nebraska. Go Big Red! 🌽 https://xkcd.com/2347/"
-          } > /tmp/pr_body.md
-          gh pr create --base main --head "$BRANCH" --title "Sync upstream $TAG" --body-file /tmp/pr_body.md
+
+          PR=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' || true)
+          if [ -z "$PR" ]; then
+            if [ "$KIND" = "auto" ]; then
+              VERDICT="\`$CUR\` -> \`$NEW\` is a **patch bump**, so this PR is merged automatically."
+            else
+              VERDICT="\`$CUR\` -> \`$NEW\` is **not** a patch bump, so this waits for a human."
+            fi
+            {
+              printf '%s\n' "Merges upstream \`$TAG\` into this fork."
+              printf '\n'
+              printf '%s\n' "$VERDICT"
+              printf '\n'
+              printf '%s\n' "The combined USB CLI + BLE environment (\`$TARGET_ENV\`) was rebuilt"
+              printf '%s\n' "against this merge in CI and **compiles**."
+              printf '\n'
+              printf '%s\n' "Merging publishes a refreshed firmware release automatically."
+              printf '\n'
+              printf '%s\n' "Opened by the scheduled \`sync-upstream\` workflow."
+              printf '\n'
+              printf '%s\n' "Proudly Made in Nebraska. Go Big Red! 🌽 https://xkcd.com/2347/"
+            } > /tmp/pr_body.md
+            gh pr create --base main --head "$BRANCH" --title "Sync upstream $TAG" --body-file /tmp/pr_body.md
+            PR=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number')
+          else
+            echo "PR #$PR already open for $BRANCH"
+          fi
+
+          if [ "$KIND" = "auto" ]; then
+            echo "Patch bump ($CUR -> $NEW) -- merging PR #$PR automatically."
+            gh pr merge "$PR" --merge
+            echo "::notice::Auto-merged $TAG (patch bump $CUR -> $NEW). Release workflow will publish."
+          else
+            echo "::notice::$TAG is $CUR -> $NEW, not a patch bump. PR #$PR left open for review."
+          fi
