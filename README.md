@@ -124,6 +124,11 @@ Everything else stops for a human:
 The classifier **fails closed**: anything it cannot confidently identify as a forward patch
 bump is treated as needing review.
 
+Because auto-merge ships firmware without anyone looking, the classifier is testable on
+demand. Run the **Sync Upstream Companion Release** workflow manually with a
+`simulate_version` such as `v1.17.2` or `v1.18.0`: it prints what the decision *would* be and
+stops. Nothing is merged, pushed, or published in that mode.
+
 ## Building it yourself
 
 ```sh
