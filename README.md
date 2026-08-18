@@ -1,3 +1,103 @@
+<p align="center"><em>Proudly Made in Nebraska. Go Big Red! 🌽 <a href="https://xkcd.com/2347/">https://xkcd.com/2347/</a></em></p>
+
+# Fork note — Wio Tracker L1 companion with USB CLI *and* BLE at the same time
+
+This is a fork of [meshcore-dev/MeshCore](https://github.com/meshcore-dev/MeshCore).
+It adds exactly one thing: a build environment for the Seeed Studio Wio Tracker L1
+named **`WioTrackerL1_companion_radio_usb_ble`**, which enables the USB serial CLI
+and Bluetooth LE **simultaneously**. Nothing else in the upstream tree is modified.
+
+## Why this was needed
+
+Upstream ships two separate companion builds for this board, and they are mutually
+exclusive in practice:
+
+| Shipped build | Defines | You get | You lose |
+|---|---|---|---|
+| `WioTrackerL1_companion_radio_usb` | `ENABLE_USB_INTERFACE` | `meshcore-cli` over USB serial | the phone app — BLE is gone |
+| `WioTrackerL1_companion_radio_ble` | `BLE_PIN_CODE` | the phone app over BLE | scriptable CLI access |
+
+So configuring the node from a laptop and then carrying it with the phone app meant
+reflashing the board between the two, every time. On a device whose whole job is to
+be picked up and taken outside, that is a genuine daily annoyance — and each reflash
+is a 1200-baud touch, a UF2 drag, and a reboot.
+
+The irritating part is that **this was never an architectural limitation.** It is a
+packaging choice. `examples/companion_radio/main.cpp` does not pick a transport; it
+registers every transport that was compiled in:
+
+```c
+MultiSerialInterface interface_manager;                                    // line 17
+#if defined(BLE_PIN_CODE)         ... addInterface(InterfaceType::Bluetooth, ...)  // 188
+#if defined(ENABLE_USB_INTERFACE) ... addInterface(InterfaceType::USB, ...)        // 214
+```
+
+Those are independent `#if` blocks — there is no `#elif` anywhere in the chain. And
+`MultiSerialInterface` is explicitly built for concurrency:
+
+```c
+#define MAX_INTERFACES 4     // ble, usb, wifi, ethernet
+```
+
+`writeFrame()` fans a frame out to every enabled interface, and `checkRecvFrame()`
+accepts a frame from whichever interface delivers one first. Two live clients on one
+node is the intended design. The upstream envs simply each define one flag, and no
+shipped environment in the tree turns on both (82 are BLE-only, 76 are USB-only).
+
+This fork just defines both flags in one environment and compiles
+`helpers/nrf52/SerialBLEInterface.cpp` alongside the USB path.
+
+## The one real trap
+
+**Do not add `BLE_DEBUG_LOGGING` to a build that also defines `ENABLE_USB_INTERFACE`.**
+
+`BLE_DEBUG_LOGGING` expands to `Serial.printf("BLE: " ...)`, and
+`ArduinoSerialInterface` uses that *same* `Serial` stream to carry binary frames.
+Turning both on interleaves human-readable log text into the frame stream and
+corrupts the CLI protocol. This is the identical hazard that already earns
+`MESH_DEBUG` and `MESH_PACKET_LOGGING` their `; NOTE: DO NOT ENABLE` comments in the
+stock `_usb` environment, and it is why upstream's own `build.sh` strips
+`-UBLE_DEBUG_LOGGING` under `DISABLE_DEBUG=1`. The new env carries the same warning
+comments so the next person does not have to rediscover it.
+
+Note that `DISABLE_DEBUG=1` itself must **not** be used to build this target. It also
+passes `-UCFG_DEBUG`, and the Adafruit nRF52 core needs that symbol
+(`while(CFG_DEBUG) yield();` in `cores/nRF5/rtos.cpp`), so the build fails to compile.
+Upstream's release workflow does not set it either — `firmware-builder.yml` passes only
+`FIRMWARE_VERSION`. This environment defines no debug flags to begin with, so there is
+nothing to strip.
+
+## Does it fit?
+
+Yes, with room to spare. The genuine open question was whether the BLE stack and the
+USB interface would both fit in the board's 708,608-byte application budget. Measured
+on the real hardware target (nRF52840, SoftDevice S140 7.3.0):
+
+```
+RAM:   62.7% (used 147604 bytes from 235520 bytes)
+Flash: 60.8% (used 430824 bytes from 708608 bytes)
+```
+
+## Behaviour to expect
+
+Because `writeFrame()` writes to *all* enabled interfaces, a phone connected over BLE
+and a `meshcore-cli` session over USB will both see every frame. That is the intended
+design, not a bug, but it does mean the two clients share one event stream rather than
+getting isolated sessions.
+
+## Building it yourself
+
+```sh
+FIRMWARE_VERSION=v1.17.1 sh build.sh build-firmware WioTrackerL1_companion_radio_usb_ble
+```
+
+Artifacts land in `out/`. To flash on macOS: `stty -f /dev/cu.usbmodemXXXX 1200` to drop
+the board into its UF2 bootloader, wait for the `TRACKER L1` volume to mount, then copy
+the `.uf2` onto it. The volume ejecting itself is the success signal. Radio settings
+(node name, frequency, bandwidth, spreading factor, TX power) survive the reflash.
+
+---
+
 ## About MeshCore
 
 MeshCore is a lightweight, portable C++ library that enables multi-hop packet routing for embedded projects using LoRa and other packet radios. It is designed for developers who want to create resilient, decentralized communication networks that work without the internet.
