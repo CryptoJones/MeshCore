@@ -112,6 +112,13 @@ jobs:
 
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             echo "Refreshing existing release $RELEASE_TAG"
+            # Artifact names embed the build commit, so a plain upload ACCUMULATES a new
+            # pair every push and leaves users guessing which file is current. Delete the
+            # old assets first so the release always holds exactly one build.
+            for OLD in $(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name'); do
+              echo "  removing stale asset: $OLD"
+              gh release delete-asset "$RELEASE_TAG" "$OLD" --yes
+            done
             gh release upload "$RELEASE_TAG" out/* --clobber
             gh release edit "$RELEASE_TAG" --notes-file /tmp/release_notes.md
           else
