@@ -93,6 +93,8 @@ class HomeScreen : public UIScreen {
   enum HomePage {
     FIRST,
     RECENT,
+    CONTACTS,     // ui-cj
+    MESSAGES,     // ui-cj
     RADIO,
     BLUETOOTH,
     ADVERT,
@@ -272,6 +274,22 @@ public:
         display.setCursor(display.width() - timestamp_width - 1, y);
         display.print(tmp);
       }
+    } else if (_page == HomePage::CONTACTS) {
+      display.setColor(UIColor::primary_txt);
+      display.setTextSize(2);
+      sprintf(tmp, "%d", the_mesh.getNumContacts());
+      display.drawTextCentered(display.width() / 2, 22, tmp);
+      display.setTextSize(1);
+      display.setColor(UIColor::secondary_txt);
+      display.drawTextCentered(display.width() / 2, 43, "Contacts - press");
+    } else if (_page == HomePage::MESSAGES) {
+      display.setColor(UIColor::primary_txt);
+      display.setTextSize(2);
+      sprintf(tmp, "%d", _task->getMsgLog()->count());
+      display.drawTextCentered(display.width() / 2, 22, tmp);
+      display.setTextSize(1);
+      display.setColor(UIColor::secondary_txt);
+      display.drawTextCentered(display.width() / 2, 43, "Messages - press");
     } else if (_page == HomePage::RADIO) {
       display.setColor(UIColor::primary_txt);
       display.setTextSize(1);
@@ -442,13 +460,15 @@ public:
   }
 
   bool handleInput(char c) override {
-    // ui-cj: UP and DOWN are unused by the stock home screen (which pages with
-    // LEFT/RIGHT), so they are free for the two new sections.
-    if (c == KEY_UP) {
+    // ui-cj: the only key codes this board can generate are KEY_ENTER (button
+    // click), KEY_LEFT and KEY_RIGHT (joystick). There is no up/down axis, and
+    // triple-click is swallowed by the buzzer toggle before screens see it. So the
+    // new sections are home PAGES entered with ENTER, not separate hotkeys.
+    if (c == KEY_ENTER && _page == HomePage::CONTACTS) {
       _task->gotoContactsScreen();
       return true;
     }
-    if (c == KEY_DOWN) {
+    if (c == KEY_ENTER && _page == HomePage::MESSAGES) {
       _task->gotoMsgLogScreen();
       return true;
     }
@@ -1017,15 +1037,19 @@ void UITask::gotoSendScreen() {
 }
 
 bool CJContactsScreen::handleInput(char c) {
+  // Three-key model: LEFT/RIGHT move the selection, ENTER acts. There is no
+  // dedicated back key on this board, so the list carries a trailing "Back" row.
   int count = the_mesh.getNumContacts();
-  if (c == KEY_UP || c == KEY_PREV) { _sel--; clampWindow(count); return true; }
-  if (c == KEY_DOWN || c == KEY_NEXT) { _sel++; clampWindow(count); return true; }
+  int rows = count + 1;                 // + Back
+
+  if (c == KEY_LEFT || c == KEY_PREV) { _sel--; clampWindow(rows); return true; }
+  if (c == KEY_RIGHT || c == KEY_NEXT) { _sel++; clampWindow(rows); return true; }
   if (c == KEY_ENTER || c == KEY_SELECT) {
-    if (count > 0) _task->gotoSendScreen();
-    return true;
-  }
-  if (c == KEY_CANCEL || c == KEY_LEFT || c == KEY_HOME) {
-    _task->gotoHomeScreen();
+    if (_sel >= count) {                // Back row
+      _task->gotoHomeScreen();
+    } else {
+      _task->gotoSendScreen();
+    }
     return true;
   }
   return false;
@@ -1033,11 +1057,14 @@ bool CJContactsScreen::handleInput(char c) {
 
 bool CJMsgLogScreen::handleInput(char c) {
   int count = _log->count();
+  int rows = count + 1;                 // + Back
 
   if (_detail) {
-    // In the full-text view ENTER promotes the message to a canned reply. That is how
-    // the canned list grows without typing: keep the phrasing someone already sent you.
-    if (c == KEY_ENTER || c == KEY_SELECT) {
+    // Nothing to scroll in the detail view, so LEFT/RIGHT become the two actions.
+    if (c == KEY_LEFT || c == KEY_PREV) { _detail = false; return true; }
+    if (c == KEY_RIGHT || c == KEY_NEXT) {
+      // Promote this message to a canned reply -- how the canned list grows
+      // without typing: keep wording someone already sent you.
       const LoggedMsg* m = _log->get(_sel);
       if (m != NULL && _task->getCanned()->add(m->text)) {
         _task->showAlert("Saved as canned", 1200);
@@ -1046,20 +1073,18 @@ bool CJMsgLogScreen::handleInput(char c) {
       }
       return true;
     }
-    if (c == KEY_UP || c == KEY_PREV) { _sel--; clampWindow(count); return true; }
-    if (c == KEY_DOWN || c == KEY_NEXT) { _sel++; clampWindow(count); return true; }
-    if (c == KEY_CANCEL || c == KEY_LEFT) { _detail = false; return true; }
+    if (c == KEY_ENTER || c == KEY_SELECT) { _detail = false; return true; }
     return false;
   }
 
-  if (c == KEY_UP || c == KEY_PREV) { _sel--; clampWindow(count); return true; }
-  if (c == KEY_DOWN || c == KEY_NEXT) { _sel++; clampWindow(count); return true; }
+  if (c == KEY_LEFT || c == KEY_PREV) { _sel--; clampWindow(rows); return true; }
+  if (c == KEY_RIGHT || c == KEY_NEXT) { _sel++; clampWindow(rows); return true; }
   if (c == KEY_ENTER || c == KEY_SELECT) {
-    if (count > 0) _detail = true;
-    return true;
-  }
-  if (c == KEY_CANCEL || c == KEY_LEFT || c == KEY_HOME) {
-    _task->gotoHomeScreen();
+    if (_sel >= count) {                // Back row
+      _task->gotoHomeScreen();
+    } else if (count > 0) {
+      _detail = true;
+    }
     return true;
   }
   return false;
@@ -1067,9 +1092,15 @@ bool CJMsgLogScreen::handleInput(char c) {
 
 bool CJSendScreen::handleInput(char c) {
   int count = _canned->count();
-  if (c == KEY_UP || c == KEY_PREV) { _sel--; clampWindow(count); return true; }
-  if (c == KEY_DOWN || c == KEY_NEXT) { _sel++; clampWindow(count); return true; }
+  int rows = count + 1;                 // + Back
+
+  if (c == KEY_LEFT || c == KEY_PREV) { _sel--; clampWindow(rows); return true; }
+  if (c == KEY_RIGHT || c == KEY_NEXT) { _sel++; clampWindow(rows); return true; }
   if (c == KEY_ENTER || c == KEY_SELECT) {
+    if (_sel >= count) {                // Back row -- return to picking a recipient
+      _task->gotoContactsScreen();
+      return true;
+    }
     int result = sendSelected();
     if (result == MSG_SEND_FAILED) {
       _task->showAlert("Send FAILED", 1500);
@@ -1079,10 +1110,6 @@ bool CJSendScreen::handleInput(char c) {
       _task->showAlert("Sent (flood)", 1200);
     }
     _task->gotoHomeScreen();
-    return true;
-  }
-  if (c == KEY_CANCEL || c == KEY_LEFT) {
-    _task->gotoContactsScreen();   // back to picking a recipient
     return true;
   }
   return false;

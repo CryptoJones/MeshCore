@@ -6,10 +6,13 @@
    because the design puts the interface in the phone app. These screens add the parts
    that make the hardware usable on its own.
 
-   Reached from the home screen: UP opens contacts, DOWN opens the message log. Inside
-   a list: UP/DOWN scroll, ENTER selects, CANCEL/LEFT goes back. Those keys are free on
-   the home screen, which uses LEFT/RIGHT for paging and ENTER for per-page actions, so
-   nothing existing is displaced.
+   INPUT CONSTRAINT: this board generates only KEY_ENTER (button click), KEY_LEFT and
+   KEY_RIGHT (joystick). There is no up/down axis, and triple-click is consumed by the
+   buzzer toggle before any screen sees it. Everything below is built for three keys:
+   LEFT/RIGHT move the selection, ENTER acts, and each list carries a trailing "Back"
+   row because there is no key to spare for cancel.
+
+   Contacts and Messages are pages in the home screen rotation, opened with ENTER.
 */
 
 #include <Arduino.h>
@@ -103,18 +106,18 @@ public:
 
   int render(DisplayDriver& display) override {
     int count = the_mesh.getNumContacts();
-    clampWindow(count);
+    int rows = count + 1;                  // trailing Back row
+    clampWindow(rows);
     drawHeader(display, "Contacts", count);
-
-    if (count == 0) {
-      drawEmpty(display, "none yet");
-      return 2000;
-    }
 
     ContactInfo c;
     for (int row = 0; row < CJ_MAX_VISIBLE; row++) {
       int idx = _top + row;
-      if (idx >= count) break;
+      if (idx >= rows) break;
+      if (idx == count) {                  // Back row
+        drawRow(display, row, "< Back", idx == _sel);
+        continue;
+      }
       if (!the_mesh.getContactByIdx(idx, c)) continue;
 
       // Path length tells you whether a direct route is known -- the single most
@@ -148,11 +151,12 @@ public:
 
   int render(DisplayDriver& display) override {
     int count = _log->count();
-    clampWindow(count);
+    clampWindow(count + 1);                // + Back row
 
     if (count == 0) {
       drawHeader(display, "Messages", 0);
       drawEmpty(display, "none received");
+      drawRow(display, 2, "< Back", true);
       return 2000;
     }
 
@@ -173,12 +177,21 @@ public:
       char filtered[MSGLOG_TEXT_LEN];
       display.translateUTF8ToBlocks(filtered, m->text, sizeof(filtered));
       display.printWordWrap(filtered, display.width());
+
+      display.setColor(UIColor::secondary_txt);
+      display.setCursor(0, display.height() - 9);
+      display.print("<back  save>");
       return 1000;
     }
 
     drawHeader(display, "Messages", count);
     for (int row = 0; row < CJ_MAX_VISIBLE; row++) {
       int idx = _top + row;
+      if (idx > count) break;
+      if (idx == count) {                  // Back row
+        drawRow(display, row, "< Back", idx == _sel);
+        continue;
+      }
       const LoggedMsg* m = _log->get(idx);
       if (m == NULL) break;
 
@@ -228,20 +241,20 @@ public:
 
   int render(DisplayDriver& display) override {
     int count = _canned->count();
-    clampWindow(count);
+    int rows = count + 1;                  // trailing Back row
+    clampWindow(rows);
 
     char hdr[40];
     sprintf(hdr, "To %.18s", recipientName());
     drawHeader(display, hdr, count);
 
-    if (count == 0) {
-      drawEmpty(display, "no canned msgs");
-      return 2000;
-    }
-
     for (int row = 0; row < CJ_MAX_VISIBLE; row++) {
       int idx = _top + row;
-      if (idx >= count) break;
+      if (idx >= rows) break;
+      if (idx == count) {
+        drawRow(display, row, "< Back", idx == _sel);
+        continue;
+      }
       drawRow(display, row, _canned->get(idx), idx == _sel);
     }
     return 1000;
