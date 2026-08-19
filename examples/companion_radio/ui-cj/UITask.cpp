@@ -678,6 +678,7 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
   cj_msglog   = new CJMsgLogScreen(this, &_msglog);
   cj_send     = new CJSendScreen(this, &_canned);
   cj_keyboard = new CJKeyboardScreen(this, (CJSendScreen *) cj_send, &_canned);
+  cj_cannedmgr = new CJCannedMgrScreen(this, &_canned);
 
   setCurrScreen(splash);
 }
@@ -1072,6 +1073,31 @@ void UITask::gotoContactsScreen() {
   setCurrScreen(cj_contacts);
 }
 
+void UITask::gotoCannedMgrScreen() {
+  setCurrScreen(cj_cannedmgr);
+}
+
+bool CJCannedMgrScreen::handleInput(char c) {
+  int count = _canned->count();
+  int rows = count + 1;
+
+  if (c == KEY_UP || c == KEY_LEFT || c == KEY_PREV) { _sel--; clampWindow(rows); return true; }
+  if (c == KEY_DOWN || c == KEY_RIGHT || c == KEY_NEXT) { _sel++; clampWindow(rows); return true; }
+  if (c == KEY_CANCEL) { _task->gotoSendScreen(); return true; }
+  if (c == KEY_ENTER || c == KEY_SELECT) {
+    if (_sel >= count) {
+      _task->gotoSendScreen();
+    } else if (_canned->remove(_sel)) {
+      _task->showAlert("Deleted", 900);
+      clampWindow(_canned->count() + 1);
+    } else {
+      _task->showAlert("Delete failed", 1000);
+    }
+    return true;
+  }
+  return false;
+}
+
 void UITask::gotoKeyboardScreen() {
   ((CJKeyboardScreen *) cj_keyboard)->reset();
   setCurrScreen(cj_keyboard);
@@ -1183,7 +1209,7 @@ bool CJMsgLogScreen::handleInput(char c) {
 
 bool CJSendScreen::handleInput(char c) {
   int count = _canned->count();
-  int rows = count + 2;                 // + "Type custom" + Back
+  int rows = count + 3;                 // + "Type custom" + "Delete canned" + Back
 
   if (c == KEY_UP || c == KEY_LEFT || c == KEY_PREV) { _sel--; clampWindow(rows); return true; }
   if (c == KEY_DOWN || c == KEY_RIGHT || c == KEY_NEXT) { _sel++; clampWindow(rows); return true; }
@@ -1196,7 +1222,11 @@ bool CJSendScreen::handleInput(char c) {
       _task->gotoKeyboardScreen();
       return true;
     }
-    if (_sel > count) {                 // Back row -- return to the list we came from
+    if (_sel == count + 1) {            // "Delete canned..."
+      _task->gotoCannedMgrScreen();
+      return true;
+    }
+    if (_sel > count + 1) {             // Back row -- return to the list we came from
       if (_target == CHANNEL) {
         _task->gotoChannelsScreen();
       } else {

@@ -430,7 +430,7 @@ public:
 
   int render(DisplayDriver& display) override {
     int count = _canned->count();
-    int rows = count + 2;                  // + "Type custom" + Back
+    int rows = count + 3;                  // + "Type custom" + "Delete canned" + Back
     clampWindow(rows);
 
     char hdr[40];
@@ -445,6 +445,52 @@ public:
         continue;
       }
       if (idx == count + 1) {
+        drawRow(display, row, "Delete canned...", idx == _sel);
+        continue;
+      }
+      if (idx == count + 2) {
+        drawRow(display, row, "< Back", idx == _sel);
+        continue;
+      }
+      drawRow(display, row, _canned->get(idx), idx == _sel);
+    }
+    return 1000;
+  }
+
+  bool handleInput(char c) override;   // defined in UITask.cpp
+};
+
+
+/* ----------------------------------------------------------- canned manager ---- */
+
+/* Deleting canned messages. Needed because SAVE is one keypress and a mis-saved entry
+   would otherwise be permanent -- the file is the source of truth and there is no
+   other way to edit it from the device.
+
+   ENTER deletes the highlighted entry outright rather than asking to confirm: the
+   list is short, the cost of a mistake is retyping one phrase, and a confirm step
+   doubles the keypresses on a five-button device. */
+class CJCannedMgrScreen : public CJListScreen {
+  UITask* _task;
+  CannedStore* _canned;
+
+public:
+  CJCannedMgrScreen(UITask* task, CannedStore* canned) : _task(task), _canned(canned) { }
+
+  int render(DisplayDriver& display) override {
+    int count = _canned->count();
+    int rows = count + 1;                  // + Back
+    clampWindow(rows);
+    drawHeader(display, "Delete canned", _sel, rows);
+
+    if (count == 0) {
+      drawEmpty(display, "list is empty");
+    }
+
+    for (int row = 0; row < CJ_MAX_VISIBLE; row++) {
+      int idx = _top + row;
+      if (idx >= rows) break;
+      if (idx == count) {
         drawRow(display, row, "< Back", idx == _sel);
         continue;
       }
