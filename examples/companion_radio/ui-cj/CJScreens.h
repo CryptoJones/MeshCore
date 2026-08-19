@@ -175,16 +175,12 @@ class CJMsgLogScreen : public UIScreen {
   UITask* _task;
   MsgLog* _log;
   int _sel;       // which message (0 = newest)
-  int _action;    // 0 = Save as canned, 1 = Delete, 2 = Back
+  int _action;    // 0 = Delete, 1 = Back
 
-  static const int ACTION_COUNT = 3;
+  static const int ACTION_COUNT = 2;
 
   static const char* actionName(int a) {
-    switch (a) {
-      case 0:  return "Save as canned";
-      case 1:  return "Delete";
-      default: return "Back";
-    }
+    return (a == 0) ? "Delete" : "Back";
   }
 
   void clampSel() {
@@ -410,9 +406,10 @@ public:
 
   /* Returns MSG_SEND_FAILED / MSG_SEND_SENT_FLOOD / MSG_SEND_SENT_DIRECT.
      Group posts have no per-recipient path, so a successful channel send is
-     reported as FLOOD -- which is what it actually is on the air. */
-  int sendSelected() {
-    const char* text = _canned->get(_sel);
+     reported as FLOOD -- which is what it actually is on the air.
+     Split out from sendSelected() so the keyboard can send typed text down the same
+     path rather than duplicating the contact/channel branch. */
+  int sendText(const char* text) {
     if (text == NULL || *text == 0) return MSG_SEND_FAILED;
 
     if (_target == CONTACT) {
@@ -429,9 +426,11 @@ public:
     return MSG_SEND_FAILED;
   }
 
+  int sendSelected() { return sendText(_canned->get(_sel)); }
+
   int render(DisplayDriver& display) override {
     int count = _canned->count();
-    int rows = count + 1;                  // trailing Back row
+    int rows = count + 2;                  // + "Type custom" + Back
     clampWindow(rows);
 
     char hdr[40];
@@ -442,6 +441,10 @@ public:
       int idx = _top + row;
       if (idx >= rows) break;
       if (idx == count) {
+        drawRow(display, row, "Type custom...", idx == _sel);
+        continue;
+      }
+      if (idx == count + 1) {
         drawRow(display, row, "< Back", idx == _sel);
         continue;
       }
@@ -452,3 +455,124 @@ public:
 
   bool handleInput(char c) override;   // defined in UITask.cpp
 };
+
+/* ---------------------------------------------------------------- keyboard ---- */
+
+/* On-screen keyboard for when the canned list is not enough.
+
+   A 128x64 display and five buttons is a hostile place to type, so the layout is a
+   fixed grid rather than anything modal: UP/DOWN pick the row, LEFT/RIGHT the column,
+   ENTER commits the key. Uppercase only -- a shift state would double the keypresses
+   for something that is mostly short radio traffic.
+
+   The bottom row carries the verbs, including SAVE, which is why the canned list can
+   grow from here: type it once, save it, pick it from the list forever after. */
+
+#define KB_ROWS  4
+
+class CJKeyboardScreen : public UIScreen {
+  UITask* _task;
+  CJSendScreen* _send;
+  CannedStore* _canned;
+
+  char _text[CANNED_MAX_LEN];
+  int  _len;
+  int  _row, _col;
+
+  static const char* rowChars(int r) {
+    switch (r) {
+      case 0:  return "ABCDEFGHIJKLM";
+      case 1:  return "NOPQRSTUVWXYZ";
+      case 2:  return "0123456789.,?";
+      default: return "";   // row 3 is the verb row
+    }
+  }
+
+  static const char* verbName(int i) {
+    switch (i) {
+      case 0:  return "SP";
+      case 1:  return "DEL";
+      case 2:  return "SAVE";
+      case 3:  return "SEND";
+      default: return "EXIT";
+    }
+  }
+  static const int VERB_COUNT = 5;
+
+  static int rowLen(int r) {
+    return (r == KB_ROWS - 1) ? VERB_COUNT : (int) strlen(rowChars(r));
+  }
+
+public:
+  CJKeyboardScreen(UITask* task, CJSendScreen* send, CannedStore* canned)
+    : _task(task), _send(send), _canned(canned), _len(0), _row(0), _col(0) { _text[0] = 0; }
+
+  void reset() { _len = 0; _text[0] = 0; _row = 0; _col = 0; }
+  const char* text() const { return _text; }
+
+  void append(char c) {
+    if (_len < (int) sizeof(_text) - 1) { _text[_len++] = c; _text[_len] = 0; }
+  }
+  void backspace() {
+    if (_len > 0) { _text[--_len] = 0; }
+  }
+
+  void clampCursor() {
+    if (_row < 0) _row = KB_ROWS - 1;
+    if (_row >= KB_ROWS) _row = 0;
+    int n = rowLen(_row);
+    if (n <= 0) n = 1;
+    if (_col < 0) _col = n - 1;
+    if (_col >= n) _col = 0;
+  }
+
+  int render(DisplayDriver& display) override {
+    clampCursor();
+    char tmp[40];
+    display.setTextSize(1);
+
+    // Header: who it is going to, and how many characters so far.
+    sprintf(tmp, "%.14s", _send->recipientName());
+    display.setColor(UIColor::corp_blue);
+    display.drawTextEllipsized(0, 0, display.width() - 30, tmp);
+    sprintf(tmp, "[%d]", _len);
+    display.setCursor(display.width() - display.getTextWidth(tmp) - 2, 0);
+    display.print(tmp);
+    display.drawRect(0, 10, display.width(), 1);
+
+    // What has been typed so far, ellipsized to one line so it can never run into
+    // the grid below.
+    display.setColor(UIColor::primary_txt);
+    display.drawTextEllipsized(0, 13, display.width() - 2, _len ? _text : "_");
+    display.drawRect(0, 23, display.width(), 1);
+
+    // The grid. Columns are evenly spaced across the full width.
+    for (int r = 0; r < KB_ROWS; r++) {
+      int y = 27 + r * 10;
+      int n = rowLen(r);
+      int step = display.width() / (n > 0 ? n : 1);
+
+      for (int col = 0; col < n; col++) {
+        bool sel = (r == _row && col == _col);
+        char label[6];
+        if (r == KB_ROWS - 1) {
+          StrHelper::strncpy(label, verbName(col), sizeof(label));
+        } else {
+          label[0] = rowChars(r)[col];
+          label[1] = 0;
+        }
+        int x = col * step + 1;
+        display.setColor(sel ? UIColor::warning_txt : UIColor::secondary_txt);
+        if (sel) {
+          display.drawRect(x - 1, y - 1, display.getTextWidth(label) + 3, 10);
+        }
+        display.setCursor(x, y);
+        display.print(label);
+      }
+    }
+    return 500;
+  }
+
+  bool handleInput(char c) override;   // defined in UITask.cpp
+};
+

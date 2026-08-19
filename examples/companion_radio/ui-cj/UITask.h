@@ -60,6 +60,7 @@ class UITask : public AbstractUITask {
   UIScreen* cj_channels;
   UIScreen* cj_msglog;
   UIScreen* cj_send;
+  UIScreen* cj_keyboard;
   MsgLog _msglog;
   CannedStore _canned;
 
@@ -91,6 +92,7 @@ public:
   void gotoMsgLogScreen();
   void gotoSendScreen();          // to the selected contact
   void gotoSendChannelScreen();   // to the selected channel
+  void gotoKeyboardScreen();      // compose a custom message
   MsgLog* getMsgLog() { return &_msglog; }
   CannedStore* getCanned() { return &_canned; }
   void showAlert(const char* text, int duration_millis);

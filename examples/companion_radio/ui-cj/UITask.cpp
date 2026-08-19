@@ -677,6 +677,7 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
   cj_channels = new CJChannelsScreen(this);
   cj_msglog   = new CJMsgLogScreen(this, &_msglog);
   cj_send     = new CJSendScreen(this, &_canned);
+  cj_keyboard = new CJKeyboardScreen(this, (CJSendScreen *) cj_send, &_canned);
 
   setCurrScreen(splash);
 }
@@ -1071,6 +1072,11 @@ void UITask::gotoContactsScreen() {
   setCurrScreen(cj_contacts);
 }
 
+void UITask::gotoKeyboardScreen() {
+  ((CJKeyboardScreen *) cj_keyboard)->reset();
+  setCurrScreen(cj_keyboard);
+}
+
 void UITask::gotoChannelsScreen() {
   setCurrScreen(cj_channels);
 }
@@ -1161,25 +1167,14 @@ bool CJMsgLogScreen::handleInput(char c) {
   if (c == KEY_CANCEL) { _task->gotoHomeScreen(); return true; }
 
   if (c == KEY_ENTER || c == KEY_SELECT) {
-    const LoggedMsg* m = _log->get(_sel);
-    switch (_action) {
-      case 0:   // Save as canned -- builds the quick-reply list without typing
-        if (m != NULL && _task->getCanned()->add(m->text)) {
-          _task->showAlert("Saved as canned", 1200);
-        } else {
-          _task->showAlert("Not saved", 1000);
-        }
-        break;
-      case 1:   // Delete
-        if (_log->remove(_sel)) {
-          _task->showAlert("Deleted", 900);
-          clampSel();
-          if (_log->count() == 0) _task->gotoHomeScreen();
-        }
-        break;
-      default:
-        _task->gotoHomeScreen();
-        break;
+    if (_action == 0) {                 // Delete
+      if (_log->remove(_sel)) {
+        _task->showAlert("Deleted", 900);
+        clampSel();
+        if (_log->count() == 0) _task->gotoHomeScreen();
+      }
+    } else {                            // Back
+      _task->gotoHomeScreen();
     }
     return true;
   }
@@ -1188,7 +1183,7 @@ bool CJMsgLogScreen::handleInput(char c) {
 
 bool CJSendScreen::handleInput(char c) {
   int count = _canned->count();
-  int rows = count + 1;                 // + Back
+  int rows = count + 2;                 // + "Type custom" + Back
 
   if (c == KEY_UP || c == KEY_LEFT || c == KEY_PREV) { _sel--; clampWindow(rows); return true; }
   if (c == KEY_DOWN || c == KEY_RIGHT || c == KEY_NEXT) { _sel++; clampWindow(rows); return true; }
@@ -1197,7 +1192,11 @@ bool CJSendScreen::handleInput(char c) {
     return true;
   }
   if (c == KEY_ENTER || c == KEY_SELECT) {
-    if (_sel >= count) {                // Back row -- return to the list we came from
+    if (_sel == count) {                // "Type custom..."
+      _task->gotoKeyboardScreen();
+      return true;
+    }
+    if (_sel > count) {                 // Back row -- return to the list we came from
       if (_target == CHANNEL) {
         _task->gotoChannelsScreen();
       } else {
@@ -1214,6 +1213,52 @@ bool CJSendScreen::handleInput(char c) {
       _task->showAlert("Sent (flood)", 1200);
     }
     _task->gotoHomeScreen();
+    return true;
+  }
+  return false;
+}
+
+bool CJKeyboardScreen::handleInput(char c) {
+  if (c == KEY_UP)    { _row--; clampCursor(); return true; }
+  if (c == KEY_DOWN)  { _row++; clampCursor(); return true; }
+  if (c == KEY_LEFT || c == KEY_PREV)  { _col--; clampCursor(); return true; }
+  if (c == KEY_RIGHT || c == KEY_NEXT) { _col++; clampCursor(); return true; }
+  if (c == KEY_CANCEL) { _task->gotoSendScreen(); return true; }
+
+  if (c == KEY_ENTER || c == KEY_SELECT) {
+    if (_row < KB_ROWS - 1) {              // a character key
+      append(rowChars(_row)[_col]);
+      return true;
+    }
+    switch (_col) {                        // the verb row
+      case 0: append(' '); break;
+      case 1: backspace(); break;
+      case 2:                              // SAVE -- grows the canned list
+        if (_len == 0) {
+          _task->showAlert("Nothing to save", 900);
+        } else if (_canned->add(_text)) {
+          _task->showAlert("Saved as canned", 1200);
+        } else {
+          _task->showAlert("Not saved", 1000);
+        }
+        break;
+      case 3: {                            // SEND
+        if (_len == 0) { _task->showAlert("Nothing to send", 900); break; }
+        int result = _send->sendText(_text);
+        if (result == MSG_SEND_FAILED) {
+          _task->showAlert("Send FAILED", 1500);
+        } else if (result == MSG_SEND_SENT_DIRECT) {
+          _task->showAlert("Sent (direct)", 1200);
+        } else {
+          _task->showAlert("Sent (flood)", 1200);
+        }
+        _task->gotoHomeScreen();
+        break;
+      }
+      default:                             // EXIT
+        _task->gotoSendScreen();
+        break;
+    }
     return true;
   }
   return false;
