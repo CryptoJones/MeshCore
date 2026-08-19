@@ -468,7 +468,7 @@ public:
    The bottom row carries the verbs, including SAVE, which is why the canned list can
    grow from here: type it once, save it, pick it from the list forever after. */
 
-#define KB_ROWS  4
+#define KB_ROWS  5
 
 class CJKeyboardScreen : public UIScreen {
   UITask* _task;
@@ -478,37 +478,54 @@ class CJKeyboardScreen : public UIScreen {
   char _text[CANNED_MAX_LEN];
   int  _len;
   int  _row, _col;
+  bool _shift;     // false = UPPER (the default for short radio traffic)
 
+  /* Five rows in 40 vertical pixels, so the step is 8px and every row must fit the
+     128px width. Letters split across two rows of 13; digits and punctuation get
+     their own rows so neither is buried behind a modifier. */
   static const char* rowChars(int r) {
     switch (r) {
       case 0:  return "ABCDEFGHIJKLM";
       case 1:  return "NOPQRSTUVWXYZ";
-      case 2:  return "0123456789.,?";
-      default: return "";   // row 3 is the verb row
+      case 2:  return "0123456789";
+      case 3:  return ".,!?$&@-'/:";
+      default: return "";   // row 4 is the verb row
     }
   }
 
-  static const char* verbName(int i) {
+  static const char* verbName(int i, bool shift) {
     switch (i) {
-      case 0:  return "SP";
-      case 1:  return "DEL";
-      case 2:  return "SAVE";
-      case 3:  return "SEND";
+      case 0:  return shift ? "Aa" : "aA";   // shows what it will switch TO
+      case 1:  return "SP";
+      case 2:  return "DEL";
+      case 3:  return "SAVE";
+      case 4:  return "SEND";
       default: return "EXIT";
     }
   }
-  static const int VERB_COUNT = 5;
+  static const int VERB_COUNT = 6;
 
   static int rowLen(int r) {
     return (r == KB_ROWS - 1) ? VERB_COUNT : (int) strlen(rowChars(r));
   }
 
+  /* Shift applies to letters only. Digits and punctuation are on their own rows, so
+     there is no second symbol layer to remember. */
+  char keyAt(int r, int col) const {
+    char ch = rowChars(r)[col];
+    if (_shift && ch >= 'A' && ch <= 'Z') ch = ch - 'A' + 'a';
+    return ch;
+  }
+
 public:
   CJKeyboardScreen(UITask* task, CJSendScreen* send, CannedStore* canned)
-    : _task(task), _send(send), _canned(canned), _len(0), _row(0), _col(0) { _text[0] = 0; }
+    : _task(task), _send(send), _canned(canned), _len(0), _row(0), _col(0), _shift(false) {
+    _text[0] = 0;
+  }
 
-  void reset() { _len = 0; _text[0] = 0; _row = 0; _col = 0; }
+  void reset() { _len = 0; _text[0] = 0; _row = 0; _col = 0; _shift = false; }
   const char* text() const { return _text; }
+  void toggleShift() { _shift = !_shift; }
 
   void append(char c) {
     if (_len < (int) sizeof(_text) - 1) { _text[_len++] = c; _text[_len] = 0; }
@@ -531,24 +548,20 @@ public:
     char tmp[40];
     display.setTextSize(1);
 
-    // Header: who it is going to, and how many characters so far.
-    sprintf(tmp, "%.14s", _send->recipientName());
+    sprintf(tmp, "%.13s", _send->recipientName());
     display.setColor(UIColor::corp_blue);
-    display.drawTextEllipsized(0, 0, display.width() - 30, tmp);
+    display.drawTextEllipsized(0, 0, display.width() - 28, tmp);
     sprintf(tmp, "[%d]", _len);
     display.setCursor(display.width() - display.getTextWidth(tmp) - 2, 0);
     display.print(tmp);
-    display.drawRect(0, 10, display.width(), 1);
 
-    // What has been typed so far, ellipsized to one line so it can never run into
-    // the grid below.
+    // Typed text, ellipsized to a single line so it can never reach the grid.
     display.setColor(UIColor::primary_txt);
-    display.drawTextEllipsized(0, 13, display.width() - 2, _len ? _text : "_");
-    display.drawRect(0, 23, display.width(), 1);
+    display.drawTextEllipsized(0, 10, display.width() - 2, _len ? _text : "_");
+    display.drawRect(0, 20, display.width(), 1);
 
-    // The grid. Columns are evenly spaced across the full width.
     for (int r = 0; r < KB_ROWS; r++) {
-      int y = 27 + r * 10;
+      int y = 24 + r * 8;
       int n = rowLen(r);
       int step = display.width() / (n > 0 ? n : 1);
 
@@ -556,21 +569,21 @@ public:
         bool sel = (r == _row && col == _col);
         char label[6];
         if (r == KB_ROWS - 1) {
-          StrHelper::strncpy(label, verbName(col), sizeof(label));
+          StrHelper::strncpy(label, verbName(col, _shift), sizeof(label));
         } else {
-          label[0] = rowChars(r)[col];
+          label[0] = keyAt(r, col);
           label[1] = 0;
         }
         int x = col * step + 1;
         display.setColor(sel ? UIColor::warning_txt : UIColor::secondary_txt);
         if (sel) {
-          display.drawRect(x - 1, y - 1, display.getTextWidth(label) + 3, 10);
+          display.drawRect(x - 1, y - 1, display.getTextWidth(label) + 3, 9);
         }
         display.setCursor(x, y);
         display.print(label);
       }
     }
-    return 500;
+    return 400;
   }
 
   bool handleInput(char c) override;   // defined in UITask.cpp

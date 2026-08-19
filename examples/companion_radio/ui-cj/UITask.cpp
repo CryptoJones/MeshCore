@@ -1227,13 +1227,14 @@ bool CJKeyboardScreen::handleInput(char c) {
 
   if (c == KEY_ENTER || c == KEY_SELECT) {
     if (_row < KB_ROWS - 1) {              // a character key
-      append(rowChars(_row)[_col]);
+      append(keyAt(_row, _col));           // honours the shift state
       return true;
     }
     switch (_col) {                        // the verb row
-      case 0: append(' '); break;
-      case 1: backspace(); break;
-      case 2:                              // SAVE -- grows the canned list
+      case 0: toggleShift(); break;        // aA / Aa
+      case 1: append(' '); break;
+      case 2: backspace(); break;
+      case 3:                              // SAVE -- grows the canned list
         if (_len == 0) {
           _task->showAlert("Nothing to save", 900);
         } else if (_canned->add(_text)) {
@@ -1242,7 +1243,7 @@ bool CJKeyboardScreen::handleInput(char c) {
           _task->showAlert("Not saved", 1000);
         }
         break;
-      case 3: {                            // SEND
+      case 4: {                            // SEND
         if (_len == 0) { _task->showAlert("Nothing to send", 900); break; }
         int result = _send->sendText(_text);
         if (result == MSG_SEND_FAILED) {
