@@ -261,9 +261,14 @@ public:
     }
 
     if (_page == HomePage::FIRST) {
+      /* Count what the DEVICE holds, not the client's pending queue.
+         getMsgCount() is offline_queue_len -- messages waiting for the phone -- which
+         drops to zero the moment the app syncs, so it could read 0 with unread traffic
+         sitting right there. The log holds DMs and channel posts alike, and is exactly
+         what ENTER opens, so the number and the screen it leads to now agree. */
       display.setColor(UIColor::primary_txt);
       display.setTextSize(2);
-      sprintf(tmp, "MSG: %d", _task->getMsgCount());
+      sprintf(tmp, "MSG: %d", _task->getMsgLog()->count());
       display.drawTextCentered(display.width() / 2, 22, tmp);
 
       #ifdef WIFI_SSID
