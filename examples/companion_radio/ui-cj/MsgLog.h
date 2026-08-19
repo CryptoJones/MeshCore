@@ -35,7 +35,8 @@
 struct LoggedMsg {
   char from[MSGLOG_NAME_LEN];
   char text[MSGLOG_TEXT_LEN];
-  uint32_t recv_millis;
+  uint32_t recv_millis;   // for age; survives an unset RTC
+  uint32_t recv_epoch;    // RTC time of receipt; 0 when the clock is not set
   uint8_t path_len;   // 0xFF = direct/flood unknown, else hop count
   bool is_channel;    // true when `from` names a channel rather than a contact
 };
@@ -59,9 +60,11 @@ public:
     return &_msgs[slot];
   }
 
-  void add(uint8_t path_len, const char* from_name, const char* text, bool is_channel = false) {
+  void add(uint8_t path_len, const char* from_name, const char* text,
+           bool is_channel = false, uint32_t epoch = 0) {
     LoggedMsg* m = &_msgs[_head];
     m->is_channel = is_channel;
+    m->recv_epoch = epoch;
     StrHelper::strncpy(m->from, from_name == NULL ? "?" : from_name, MSGLOG_NAME_LEN);
     StrHelper::strncpy(m->text, text == NULL ? "" : text, MSGLOG_TEXT_LEN);
     m->recv_millis = millis();

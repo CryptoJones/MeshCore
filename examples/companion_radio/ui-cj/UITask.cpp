@@ -755,7 +755,8 @@ void UITask::newMsg(uint8_t path_len, const char* from_name, const char* text, i
     if (!the_mesh.getChannel(i, cd)) continue;
     if (cd.name[0] != 0 && strcmp(cd.name, from_name) == 0) { is_chan = true; break; }
   }
-  _msglog.add(path_len, from_name, text, is_chan);
+  _msglog.add(path_len, from_name, text, is_chan,
+              the_mesh.getRTCClock() ? the_mesh.getRTCClock()->getCurrentTime() : 0);
   ((MsgPreviewScreen *) msg_preview)->addPreview(path_len, from_name, text);
   setCurrScreen(msg_preview);
 

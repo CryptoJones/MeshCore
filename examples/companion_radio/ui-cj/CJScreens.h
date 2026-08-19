@@ -206,6 +206,28 @@ class CJMsgLogScreen : public UIScreen {
     }
   }
 
+  /* Age is computed from millis(), not the RTC, so it stays correct on a node whose
+     clock was never set -- the common case on a fresh radio. The log is RAM-only and
+     dies with a reboot, so millis() can never have wrapped past it. */
+  static void formatAge(char* out, size_t n, const LoggedMsg* m) {
+    if (m == NULL) { out[0] = 0; return; }
+    uint32_t secs = (millis() - m->recv_millis) / 1000;
+    if (secs < 60)          snprintf(out, n, "%lus", (unsigned long) secs);
+    else if (secs < 3600)   snprintf(out, n, "%lum", (unsigned long) (secs / 60));
+    else if (secs < 86400)  snprintf(out, n, "%luh", (unsigned long) (secs / 3600));
+    else                    snprintf(out, n, "%lud", (unsigned long) (secs / 86400));
+  }
+
+  /* Absolute clock time, only when the RTC actually holds a real date. Anything
+     before 2020 means the clock was never synced and a printed time would be a lie. */
+  static bool formatClock(char* out, size_t n, const LoggedMsg* m) {
+    if (m == NULL || m->recv_epoch < 1577836800UL) { out[0] = 0; return false; }
+    uint32_t secs_today = m->recv_epoch % 86400UL;
+    snprintf(out, n, "%02lu:%02lu",
+             (unsigned long) (secs_today / 3600), (unsigned long) ((secs_today % 3600) / 60));
+    return true;
+  }
+
   bool matches(const LoggedMsg* m) const {
     if (!_filtered) return true;
     return m != NULL && strncmp(m->from, _filter, MSGLOG_NAME_LEN - 1) == 0;
@@ -298,9 +320,14 @@ public:
     display.translateUTF8ToBlocks(hdr, tmp, sizeof(hdr));
     display.setCursor(0, 0);
     display.setColor(UIColor::corp_blue);
-    display.drawTextEllipsized(0, 0, display.width() - 32, hdr);
+    display.drawTextEllipsized(0, 0, display.width() - 62, hdr);
 
-    sprintf(tmp, "<%d/%d>", _sel + 1, count);
+    char clock[8];
+    if (formatClock(clock, sizeof(clock), m)) {
+      sprintf(tmp, "%s <%d/%d>", clock, _sel + 1, count);
+    } else {
+      sprintf(tmp, "<%d/%d>", _sel + 1, count);
+    }
     display.setCursor(display.width() - display.getTextWidth(tmp) - 2, 0);
     display.print(tmp);
     display.drawRect(0, 11, display.width(), 1);
@@ -332,7 +359,14 @@ public:
     if (_scrolling)      footer = "SCROLL up/dn  back=done";
     else if (_confirm)   footer = "Delete? press again";
     else                 footer = actionName(_action);
-    display.drawTextEllipsized(0, display.height() - 9, display.width() - 2, footer);
+    // Age sits right-aligned on the action line: it costs no body space, and "how
+    // long ago" is the question you actually ask of a message you are looking at.
+    char age[8];
+    formatAge(age, sizeof(age), m);
+    int age_w = display.getTextWidth(age);
+    display.drawTextEllipsized(0, display.height() - 9, display.width() - age_w - 6, footer);
+    display.setCursor(display.width() - age_w - 2, display.height() - 9);
+    display.print(age);
     return 1000;
   }
 
