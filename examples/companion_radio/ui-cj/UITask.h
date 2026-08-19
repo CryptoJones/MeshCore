@@ -62,6 +62,7 @@ class UITask : public AbstractUITask {
   UIScreen* cj_send;
   UIScreen* cj_keyboard;
   UIScreen* cj_cannedmgr;
+  UIScreen* cj_manage;
   MsgLog _msglog;
   CannedStore _canned;
 
@@ -95,6 +96,8 @@ public:
   void gotoSendChannelScreen();   // to the selected channel
   void gotoKeyboardScreen();      // compose a custom message
   void gotoCannedMgrScreen();     // delete saved canned messages
+  void gotoManageScreen();        // submenu holding the non-send actions
+  void gotoChannelMsgsScreen();   // read one channel's traffic
   bool gotoReplyScreen(const LoggedMsg* m);   // compose back to a message's origin
   MsgLog* getMsgLog() { return &_msglog; }
   CannedStore* getCanned() { return &_canned; }

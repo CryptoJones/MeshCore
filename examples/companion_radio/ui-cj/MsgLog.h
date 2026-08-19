@@ -19,12 +19,17 @@
 
 #define MSGLOG_CAPACITY   12
 #define MSGLOG_NAME_LEN   32
-#define MSGLOG_TEXT_LEN   96
+/* MAX_TEXT_LEN (BaseChatMesh.h) is 10*CIPHER_BLOCK_SIZE = 160, the longest direct
+   message the protocol carries. Store the full 160 plus a terminator so the log never
+   truncates a legal message -- the old 96 silently dropped the tail of anything longer. */
+#define MSGLOG_TEXT_LEN   161
 
-/* How much of a message body fits on screen above the action line. The display is
-   128x64: the body runs from y=14 to the footer rule at y=52, which is four lines of
-   roughly 21 characters. Anything longer is truncated rather than allowed to overflow
-   into the footer -- overflowing text soft-wraps and collides. */
+/* How much of a message body fits on screen above the action line. This is a HARDWARE
+   limit, not a protocol one: 128px at ~6px per character is about 21 characters a
+   line, and the body area y=14..52 holds four lines. So a 160-character message
+   cannot be shown in full on this display no matter how it is stored -- the text is
+   ellipsized rather than allowed to overflow into the footer, which would soft-wrap
+   and collide. The full text is still in the log and still reaches the phone app. */
 #define MSGLOG_BODY_CHARS 84
 
 struct LoggedMsg {

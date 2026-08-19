@@ -174,8 +174,14 @@ public:
 class CJMsgLogScreen : public UIScreen {
   UITask* _task;
   MsgLog* _log;
-  int _sel;       // which message (0 = newest)
+  int _sel;       // which message within the current view (0 = newest)
   int _action;    // 0 = Reply, 1 = Delete, 2 = Back
+  bool _confirm;  // Delete is armed and waiting for a second press
+
+  /* When set, the view is restricted to one origin -- used to read a single
+     channel's traffic from the Channels screen instead of the mixed log. */
+  char _filter[MSGLOG_NAME_LEN];
+  bool _filtered;
 
   static const int ACTION_COUNT = 3;
 
@@ -187,20 +193,65 @@ class CJMsgLogScreen : public UIScreen {
     }
   }
 
+  bool matches(const LoggedMsg* m) const {
+    if (!_filtered) return true;
+    return m != NULL && strncmp(m->from, _filter, MSGLOG_NAME_LEN - 1) == 0;
+  }
+
+  /* Views count and index over MATCHING entries; logIndex() maps back to the real
+     MsgLog position so delete removes the right one. */
+  int viewCount() const {
+    if (!_filtered) return _log->count();
+    int n = 0;
+    for (int i = 0; i < _log->count(); i++) {
+      if (matches(_log->get(i))) n++;
+    }
+    return n;
+  }
+
+  int logIndex(int nth) const {
+    if (!_filtered) return nth;
+    int n = 0;
+    for (int i = 0; i < _log->count(); i++) {
+      if (!matches(_log->get(i))) continue;
+      if (n == nth) return i;
+      n++;
+    }
+    return -1;
+  }
+
+  const LoggedMsg* viewGet(int nth) const {
+    int idx = logIndex(nth);
+    return (idx < 0) ? NULL : _log->get(idx);
+  }
+
   void clampSel() {
-    int n = _log->count();
+    int n = viewCount();
     if (n <= 0) { _sel = 0; return; }
     if (_sel < 0) _sel = n - 1;
     if (_sel >= n) _sel = 0;
   }
 
 public:
-  CJMsgLogScreen(UITask* task, MsgLog* log) : _task(task), _log(log), _sel(0), _action(0) { }
+  CJMsgLogScreen(UITask* task, MsgLog* log)
+    : _task(task), _log(log), _sel(0), _action(0), _confirm(false), _filtered(false) {
+    _filter[0] = 0;
+  }
 
-  void reset() { _sel = 0; _action = 0; }
+  void reset() { _sel = 0; _action = 0; _confirm = false; }
+  void disarm() { _confirm = false; }
+
+  void clearFilter() { _filtered = false; _filter[0] = 0; _sel = 0; _action = 0; }
+  void setFilter(const char* origin) {
+    StrHelper::strncpy(_filter, origin == NULL ? "" : origin, sizeof(_filter));
+    _filtered = (_filter[0] != 0);
+    _sel = 0;
+    _action = 0;
+  }
+  bool isFiltered() const { return _filtered; }
 
   int render(DisplayDriver& display) override {
-    int count = _log->count();
+    int count = viewCount();
     clampSel();
 
     char tmp[48];
@@ -209,7 +260,7 @@ public:
     if (count == 0) {
       display.setCursor(0, 0);
       display.setColor(UIColor::corp_blue);
-      display.print("Messages");
+      display.print(_filtered ? _filter : "Messages");
       display.drawRect(0, 11, display.width(), 1);
       display.setColor(UIColor::secondary_txt);
       display.drawTextCentered(display.width() / 2, 30, "none received");
@@ -217,7 +268,7 @@ public:
       return 2000;
     }
 
-    const LoggedMsg* m = _log->get(_sel);
+    const LoggedMsg* m = viewGet(_sel);
     if (m == NULL) return 500;
 
     // Header: who it is from, and position in the stack.
@@ -241,8 +292,13 @@ public:
 
     // Body. Bounded so it cannot run into the action line at the bottom: roughly
     // four lines of ~21 characters between y=14 and the footer rule.
-    char body[MSGLOG_BODY_CHARS + 2];
-    StrHelper::strncpy(body, m->text, sizeof(body));
+    /* Mark truncation honestly rather than silently cutting: without this the reader
+       cannot tell a short message from the first 84 characters of a long one. */
+    char body[MSGLOG_BODY_CHARS + 4];
+    StrHelper::strncpy(body, m->text, MSGLOG_BODY_CHARS + 1);
+    if ((int) strlen(m->text) > MSGLOG_BODY_CHARS) {
+      strcat(body, "...");
+    }
     char filtered[sizeof(body)];
     display.translateUTF8ToBlocks(filtered, body, sizeof(filtered));
 
@@ -253,7 +309,8 @@ public:
     // Action selector, always at the bottom.
     display.drawRect(0, display.height() - 12, display.width(), 1);
     display.setColor(UIColor::warning_txt);
-    display.drawTextEllipsized(0, display.height() - 9, display.width() - 2, actionName(_action));
+    display.drawTextEllipsized(0, display.height() - 9, display.width() - 2,
+                               _confirm ? "Delete? press again" : actionName(_action));
     return 1000;
   }
 
@@ -269,9 +326,22 @@ public:
 
 class CJChannelsScreen : public CJListScreen {
   UITask* _task;
+  int _action;   // 0 = Post, 1 = Read, 2 = Back
+
+  static const int ACTION_COUNT = 3;
+  static const char* actionName(int a) {
+    switch (a) {
+      case 0:  return "Post";
+      case 1:  return "Read";
+      default: return "Back";
+    }
+  }
 
 public:
-  CJChannelsScreen(UITask* task) : _task(task) { }
+  CJChannelsScreen(UITask* task) : _task(task), _action(0) { }
+
+  void reset() { _sel = 0; _top = 0; _action = 0; }
+  int action() const { return _action; }
 
   static int channelCount() {
     ChannelDetails cd;
@@ -282,7 +352,7 @@ public:
     return n;
   }
 
-  /* Maps a visible row back to a channel slot, skipping empty ones. */
+  /* Maps a visible page back to a channel slot, skipping empty ones. */
   static bool channelAt(int nth, ChannelDetails& dest) {
     ChannelDetails cd;
     int n = 0;
@@ -296,15 +366,14 @@ public:
 
   bool getSelected(ChannelDetails& dest) { return channelAt(_sel, dest); }
 
-  /* One channel per view, paged with LEFT/RIGHT -- deliberately the same shape as the
-     home screen's pages rather than a scrolling list. There are only ever a handful of
-     channels, so paging costs nothing and the navigation reads identically to the rest
-     of the UI. Contacts and the message log stay as lists, where scanning several rows
-     at once is worth more. */
+  /* One channel per page, paged with LEFT/RIGHT -- deliberately the same shape as the
+     home screen's pages rather than a scrolling list, since there are only ever a
+     handful. UP/DOWN pick what ENTER does, matching the message reader. */
   int render(DisplayDriver& display) override {
     int count = channelCount();
-    int pages = count + 1;                 // + Back page
-    clampWindow(pages);
+    clampWindow(count > 0 ? count : 1);
+    if (_action < 0) _action = ACTION_COUNT - 1;
+    if (_action >= ACTION_COUNT) _action = 0;
 
     char tmp[40];
     display.setTextSize(1);
@@ -313,7 +382,7 @@ public:
     display.print("Channels");
 
     if (count > 0) {
-      sprintf(tmp, "<%d/%d>", _sel + 1, pages);
+      sprintf(tmp, "<%d/%d>", _sel + 1, count);
     } else {
       sprintf(tmp, "<0>");
     }
@@ -321,32 +390,11 @@ public:
     display.print(tmp);
     display.drawRect(0, 11, display.width(), 1);
 
-    // Page dots, matching the home screen's indicator.
-    int y = 16;
-    int x = display.width() / 2 - 5 * (pages - 1);
-    for (int i = 0; i < pages; i++, x += 10) {
-      if (i == _sel) {
-        display.fillRect(x - 1, y - 1, 4, 4);
-      } else {
-        display.fillRect(x, y, 2, 2);
-      }
-    }
-
     if (count == 0) {
       display.setColor(UIColor::secondary_txt);
-      display.setTextSize(1);
-      display.drawTextCentered(display.width() / 2, 34, "none configured");
+      display.drawTextCentered(display.width() / 2, 30, "none configured");
+      display.drawTextCentered(display.width() / 2, 50, "press to exit");
       return 2000;
-    }
-
-    if (_sel >= count) {                   // Back page
-      display.setColor(UIColor::primary_txt);
-      display.setTextSize(2);
-      display.drawTextCentered(display.width() / 2, 30, "Back");
-      display.setTextSize(1);
-      display.setColor(UIColor::secondary_txt);
-      display.drawTextCentered(display.width() / 2, 52, "press to exit");
-      return 1000;
     }
 
     ChannelDetails cd;
@@ -354,15 +402,15 @@ public:
       char filtered[sizeof(cd.name) + 2];
       sprintf(tmp, "#%.30s", cd.name);
       display.translateUTF8ToBlocks(filtered, tmp, sizeof(filtered));
-
       display.setColor(UIColor::primary_txt);
       display.setTextSize(2);
-      display.drawTextCentered(display.width() / 2, 30, filtered);
-
+      display.drawTextCentered(display.width() / 2, 26, filtered);
       display.setTextSize(1);
-      display.setColor(UIColor::secondary_txt);
-      display.drawTextCentered(display.width() / 2, 52, "press to post");
     }
+
+    display.drawRect(0, display.height() - 12, display.width(), 1);
+    display.setColor(UIColor::warning_txt);
+    display.drawTextEllipsized(0, display.height() - 9, display.width() - 2, actionName(_action));
     return 1000;
   }
 
@@ -434,7 +482,7 @@ public:
 
   int render(DisplayDriver& display) override {
     int count = _canned->count();
-    int rows = count + 3;                  // + "Type custom" + "Delete canned" + Back
+    int rows = count + 2;                  // + "Manage..." + Back
     clampWindow(rows);
 
     char hdr[40];
@@ -445,14 +493,10 @@ public:
       int idx = _top + row;
       if (idx >= rows) break;
       if (idx == count) {
-        drawRow(display, row, "Type custom...", idx == _sel);
+        drawRow(display, row, "Manage...", idx == _sel);
         continue;
       }
       if (idx == count + 1) {
-        drawRow(display, row, "Delete canned...", idx == _sel);
-        continue;
-      }
-      if (idx == count + 2) {
         drawRow(display, row, "< Back", idx == _sel);
         continue;
       }
@@ -464,6 +508,44 @@ public:
   bool handleInput(char c) override;   // defined in UITask.cpp
 };
 
+
+
+/* -------------------------------------------------------------- manage menu ---- */
+
+/* Everything that is not "pick a canned message and send it" lives one level down, so
+   the compose list stays a list of messages rather than a list of messages plus
+   chrome. Reached from the "Manage..." row. */
+class CJManageScreen : public CJListScreen {
+  UITask* _task;
+
+  static const int ITEM_COUNT = 3;   // Type custom, Delete canned, Back
+
+  static const char* itemName(int i) {
+    switch (i) {
+      case 0:  return "Type custom...";
+      case 1:  return "Delete canned...";
+      default: return "< Back";
+    }
+  }
+
+public:
+  CJManageScreen(UITask* task) : _task(task) { }
+
+  void reset() { _sel = 0; _top = 0; }
+
+  int render(DisplayDriver& display) override {
+    clampWindow(ITEM_COUNT);
+    drawHeader(display, "Manage", _sel, ITEM_COUNT);
+    for (int row = 0; row < CJ_MAX_VISIBLE && row < ITEM_COUNT; row++) {
+      int idx = _top + row;
+      if (idx >= ITEM_COUNT) break;
+      drawRow(display, row, itemName(idx), idx == _sel);
+    }
+    return 1000;
+  }
+
+  bool handleInput(char c) override;   // defined in UITask.cpp
+};
 
 /* ----------------------------------------------------------- canned manager ---- */
 
@@ -477,15 +559,20 @@ public:
 class CJCannedMgrScreen : public CJListScreen {
   UITask* _task;
   CannedStore* _canned;
+  bool _confirm;   // armed and waiting for a second press
 
 public:
-  CJCannedMgrScreen(UITask* task, CannedStore* canned) : _task(task), _canned(canned) { }
+  CJCannedMgrScreen(UITask* task, CannedStore* canned)
+    : _task(task), _canned(canned), _confirm(false) { }
+
+  void reset() { _sel = 0; _top = 0; _confirm = false; }
+  void disarm() { _confirm = false; }
 
   int render(DisplayDriver& display) override {
     int count = _canned->count();
     int rows = count + 1;                  // + Back
     clampWindow(rows);
-    drawHeader(display, "Delete canned", _sel, rows);
+    drawHeader(display, _confirm ? "Press again!" : "Delete canned", _sel, rows);
 
     if (count == 0) {
       drawEmpty(display, "list is empty");

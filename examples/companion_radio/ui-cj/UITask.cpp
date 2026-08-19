@@ -679,6 +679,7 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
   cj_send     = new CJSendScreen(this, &_canned);
   cj_keyboard = new CJKeyboardScreen(this, (CJSendScreen *) cj_send, &_canned);
   cj_cannedmgr = new CJCannedMgrScreen(this, &_canned);
+  cj_manage    = new CJManageScreen(this);
 
   setCurrScreen(splash);
 }
@@ -1101,25 +1102,55 @@ bool UITask::gotoReplyScreen(const LoggedMsg* m) {
 }
 
 void UITask::gotoCannedMgrScreen() {
+  ((CJCannedMgrScreen *) cj_cannedmgr)->reset();
   setCurrScreen(cj_cannedmgr);
+}
+
+void UITask::gotoManageScreen() {
+  ((CJManageScreen *) cj_manage)->reset();
+  setCurrScreen(cj_manage);
 }
 
 bool CJCannedMgrScreen::handleInput(char c) {
   int count = _canned->count();
   int rows = count + 1;
 
-  if (c == KEY_UP || c == KEY_LEFT || c == KEY_PREV) { _sel--; clampWindow(rows); return true; }
-  if (c == KEY_DOWN || c == KEY_RIGHT || c == KEY_NEXT) { _sel++; clampWindow(rows); return true; }
-  if (c == KEY_CANCEL) { _task->gotoSendScreen(); return true; }
+  if (c == KEY_UP || c == KEY_LEFT || c == KEY_PREV) { _confirm = false; _sel--; clampWindow(rows); return true; }
+  if (c == KEY_DOWN || c == KEY_RIGHT || c == KEY_NEXT) { _confirm = false; _sel++; clampWindow(rows); return true; }
+  if (c == KEY_CANCEL) {
+    if (_confirm) { _confirm = false; return true; }   // back cancels the confirm first
+    _task->gotoManageScreen();
+    return true;
+  }
   if (c == KEY_ENTER || c == KEY_SELECT) {
     if (_sel >= count) {
-      _task->gotoSendScreen();
-    } else if (_canned->remove(_sel)) {
+      _task->gotoManageScreen();
+      return true;
+    }
+    if (!_confirm) {                    // arm
+      _confirm = true;
+      return true;
+    }
+    _confirm = false;                   // confirm
+    if (_canned->remove(_sel)) {
       _task->showAlert("Deleted", 900);
       clampWindow(_canned->count() + 1);
     } else {
       _task->showAlert("Delete failed", 1000);
     }
+    return true;
+  }
+  return false;
+}
+
+bool CJManageScreen::handleInput(char c) {
+  if (c == KEY_UP || c == KEY_LEFT || c == KEY_PREV) { _sel--; clampWindow(ITEM_COUNT); return true; }
+  if (c == KEY_DOWN || c == KEY_RIGHT || c == KEY_NEXT) { _sel++; clampWindow(ITEM_COUNT); return true; }
+  if (c == KEY_CANCEL) { _task->gotoSendScreen(); return true; }
+  if (c == KEY_ENTER || c == KEY_SELECT) {
+    if (_sel == 0)      _task->gotoKeyboardScreen();
+    else if (_sel == 1) _task->gotoCannedMgrScreen();
+    else                _task->gotoSendScreen();
     return true;
   }
   return false;
@@ -1147,26 +1178,40 @@ void UITask::gotoSendChannelScreen() {
 
 bool CJChannelsScreen::handleInput(char c) {
   int count = CJChannelsScreen::channelCount();
-  int rows = count + 1;
 
-  // Channels are paged horizontally on purpose (matching the home screen), so this
-  // one keeps LEFT/RIGHT rather than adopting UP/DOWN.
-  if (c == KEY_LEFT || c == KEY_PREV) { _sel--; clampWindow(rows); return true; }
-  if (c == KEY_RIGHT || c == KEY_NEXT) { _sel++; clampWindow(rows); return true; }
+  // Paged horizontally on purpose (matching the home screen); UP/DOWN pick the action,
+  // the same convention the message reader uses.
+  if (c == KEY_LEFT || c == KEY_PREV) { _sel--; clampWindow(count > 0 ? count : 1); return true; }
+  if (c == KEY_RIGHT || c == KEY_NEXT) { _sel++; clampWindow(count > 0 ? count : 1); return true; }
+  if (c == KEY_UP) { _action = (_action + ACTION_COUNT - 1) % ACTION_COUNT; return true; }
+  if (c == KEY_DOWN) { _action = (_action + 1) % ACTION_COUNT; return true; }
   if (c == KEY_CANCEL) { _task->gotoHomeScreen(); return true; }
   if (c == KEY_ENTER || c == KEY_SELECT) {
-    if (_sel >= count) {
-      _task->gotoHomeScreen();
-    } else {
-      _task->gotoSendChannelScreen();
-    }
+    if (count == 0) { _task->gotoHomeScreen(); return true; }
+    if (_action == 0)      _task->gotoSendChannelScreen();
+    else if (_action == 1) _task->gotoChannelMsgsScreen();
+    else                   _task->gotoHomeScreen();
     return true;
   }
   return false;
 }
 
 void UITask::gotoMsgLogScreen() {
+  ((CJMsgLogScreen *) cj_msglog)->clearFilter();
   ((CJMsgLogScreen *) cj_msglog)->reset();
+  setCurrScreen(cj_msglog);
+}
+
+/* Read one channel's traffic. Channel posts arrive through newMsg() with the channel
+   name in the from_name slot, so filtering the log by that name isolates them from
+   DMs without needing a second store. */
+void UITask::gotoChannelMsgsScreen() {
+  ChannelDetails ch;
+  if (!((CJChannelsScreen *) cj_channels)->getSelected(ch)) {
+    showAlert("No channels", 1000);
+    return;
+  }
+  ((CJMsgLogScreen *) cj_msglog)->setFilter(ch.name);
   setCurrScreen(cj_msglog);
 }
 
@@ -1213,22 +1258,33 @@ bool CJMsgLogScreen::handleInput(char c) {
   }
 
   // LEFT/RIGHT page between messages; UP/DOWN choose what ENTER will do.
-  if (c == KEY_LEFT || c == KEY_PREV) { _sel--; clampSel(); return true; }
-  if (c == KEY_RIGHT || c == KEY_NEXT) { _sel++; clampSel(); return true; }
-  if (c == KEY_UP) { _action = (_action + ACTION_COUNT - 1) % ACTION_COUNT; return true; }
-  if (c == KEY_DOWN) { _action = (_action + 1) % ACTION_COUNT; return true; }
-  if (c == KEY_CANCEL) { _task->gotoHomeScreen(); return true; }
+  // Any movement disarms a pending delete, so an armed confirm can never be spent on
+  // a different message or a different action than the one you armed it on.
+  if (c == KEY_LEFT || c == KEY_PREV) { _confirm = false; _sel--; clampSel(); return true; }
+  if (c == KEY_RIGHT || c == KEY_NEXT) { _confirm = false; _sel++; clampSel(); return true; }
+  if (c == KEY_UP) { _confirm = false; _action = (_action + ACTION_COUNT - 1) % ACTION_COUNT; return true; }
+  if (c == KEY_DOWN) { _confirm = false; _action = (_action + 1) % ACTION_COUNT; return true; }
+  if (c == KEY_CANCEL) {
+    if (_confirm) { _confirm = false; return true; }   // back cancels the confirm first
+    _task->gotoHomeScreen();
+    return true;
+  }
 
   if (c == KEY_ENTER || c == KEY_SELECT) {
     if (_action == 0) {                 // Reply
-      if (!_task->gotoReplyScreen(_log->get(_sel))) {
+      if (!_task->gotoReplyScreen(viewGet(_sel))) {
         _task->showAlert("No such contact", 1200);
       }
-    } else if (_action == 1) {          // Delete
-      if (_log->remove(_sel)) {
-        _task->showAlert("Deleted", 900);
-        clampSel();
-        if (_log->count() == 0) _task->gotoHomeScreen();
+    } else if (_action == 1) {          // Delete -- arm, then confirm
+      if (!_confirm) {
+        _confirm = true;
+      } else {
+        _confirm = false;
+        if (_log->remove(logIndex(_sel))) {
+          _task->showAlert("Deleted", 900);
+          clampSel();
+          if (viewCount() == 0) _task->gotoHomeScreen();
+        }
       }
     } else {                            // Back
       _task->gotoHomeScreen();
@@ -1240,7 +1296,7 @@ bool CJMsgLogScreen::handleInput(char c) {
 
 bool CJSendScreen::handleInput(char c) {
   int count = _canned->count();
-  int rows = count + 3;                 // + "Type custom" + "Delete canned" + Back
+  int rows = count + 2;                 // + "Manage..." + Back
 
   if (c == KEY_UP || c == KEY_LEFT || c == KEY_PREV) { _sel--; clampWindow(rows); return true; }
   if (c == KEY_DOWN || c == KEY_RIGHT || c == KEY_NEXT) { _sel++; clampWindow(rows); return true; }
@@ -1249,15 +1305,11 @@ bool CJSendScreen::handleInput(char c) {
     return true;
   }
   if (c == KEY_ENTER || c == KEY_SELECT) {
-    if (_sel == count) {                // "Type custom..."
-      _task->gotoKeyboardScreen();
+    if (_sel == count) {                // "Manage..."
+      _task->gotoManageScreen();
       return true;
     }
-    if (_sel == count + 1) {            // "Delete canned..."
-      _task->gotoCannedMgrScreen();
-      return true;
-    }
-    if (_sel > count + 1) {             // Back row -- return to the list we came from
+    if (_sel > count) {                 // Back row -- return to the list we came from
       if (_target == CHANNEL) {
         _task->gotoChannelsScreen();
       } else {
@@ -1284,7 +1336,7 @@ bool CJKeyboardScreen::handleInput(char c) {
   if (c == KEY_DOWN)  { _row++; clampCursor(); return true; }
   if (c == KEY_LEFT || c == KEY_PREV)  { _col--; clampCursor(); return true; }
   if (c == KEY_RIGHT || c == KEY_NEXT) { _col++; clampCursor(); return true; }
-  if (c == KEY_CANCEL) { _task->gotoSendScreen(); return true; }
+  if (c == KEY_CANCEL) { _task->gotoManageScreen(); return true; }
 
   if (c == KEY_ENTER || c == KEY_SELECT) {
     if (_row < KB_ROWS - 1) {              // a character key
