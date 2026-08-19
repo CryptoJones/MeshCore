@@ -1,7 +1,11 @@
-# Builds the combined USB CLI + BLE firmware and publishes it as a release.
-# Runs when a sync lands on main, or on demand. The release tag is derived from
-# the nearest upstream companion-v* tag, so it tracks upstream versioning.
-name: Release USB+BLE Firmware
+# Builds the shipping Wio Tracker L1 firmware and publishes it as a release.
+# Runs when a sync lands on main, or on demand.
+#
+# The release tag carries BOTH versions: the upstream companion release this tracks,
+# and the fork's own UI version. Upstream's version does not move when ui-cj changes,
+# so a tag derived from it alone would make every UI release collide on one tag and
+# silently replace the last.
+name: Release Wio Tracker L1 Firmware
 
 on:
   push:
@@ -24,7 +28,9 @@ env:
   # publish a release UPSTREAM and only their permissions stopped it (HTTP 403).
   GH_REPO: ${{ github.repository }}
   UPSTREAM: https://github.com/meshcore-dev/MeshCore.git
-  TARGET_ENV: WioTrackerL1_companion_radio_usb_ble
+  # The shipping build: USB CLI + BLE together, plus the on-device UI.
+  TARGET_ENV: WioTrackerL1_companion_radio_cj
+  UI_VARIANT_INI: variants/wio-tracker-l1-cj/platformio.ini
 
 jobs:
   build-and-release:
@@ -47,9 +53,19 @@ jobs:
             exit 1
           fi
           VERSION="${TAG#companion-}"
-          echo "version=$VERSION"                     >> "$GITHUB_OUTPUT"
-          echo "release_tag=wio-l1-usb-ble-$VERSION"  >> "$GITHUB_OUTPUT"
-          echo "Building $VERSION (from $TAG)"
+
+          # The fork's own version, single-sourced from the build flag so the release
+          # can never disagree with what the firmware reports on its splash screen.
+          UI_VERSION=$(sed -n "s/.*CJ_UI_VERSION='\"\([^\"]*\)\"'.*/\1/p" "$UI_VARIANT_INI" | head -1)
+          if [ -z "$UI_VERSION" ]; then
+            echo "::error::CJ_UI_VERSION not found in $UI_VARIANT_INI"
+            exit 1
+          fi
+
+          echo "version=$VERSION"                                   >> "$GITHUB_OUTPUT"
+          echo "ui_version=$UI_VERSION"                             >> "$GITHUB_OUTPUT"
+          echo "release_tag=wio-l1-cj-$VERSION-ui$UI_VERSION"       >> "$GITHUB_OUTPUT"
+          echo "Building $VERSION (from $TAG), ui $UI_VERSION"
 
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-environment
@@ -70,14 +86,30 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.ver.outputs.release_tag }}
           VERSION: ${{ steps.ver.outputs.version }}
+          UI_VERSION: ${{ steps.ver.outputs.ui_version }}
         run: |
           set -euo pipefail
           {
-            printf '%s\n' "Companion firmware for the **Seeed Studio Wio Tracker L1** with the **USB serial"
-            printf '%s\n' "CLI and Bluetooth LE enabled at the same time**."
+            printf '%s\n' "Companion firmware for the **Seeed Studio Wio Tracker L1**: the **USB serial CLI and"
+            printf '%s\n' "Bluetooth LE enabled at the same time**, plus an **on-device UI**."
             printf '\n'
-            printf '%s\n' "Upstream ships these as mutually exclusive builds -- flash \`_usb\` and you lose the"
-            printf '%s\n' "phone app, flash \`_ble\` and you lose scriptable CLI access. This build gives you both."
+            printf '%s\n' "Upstream ships the transports as mutually exclusive builds -- flash \`_usb\` and you"
+            printf '%s\n' "lose the phone app, flash \`_ble\` and you lose scriptable CLI access. This build gives"
+            printf '%s\n' "you both, and adds the screens the stock companion firmware does not have."
+            printf '\n'
+            printf '%s\n' "### On-device UI (ui $UI_VERSION)"
+            printf '\n'
+            printf '%s\n' "Stock companion firmware is three screens -- splash, home, message preview -- because"
+            printf '%s\n' "MeshCore puts the interface in the phone app. This build makes the radio usable alone:"
+            printf '\n'
+            printf '%s\n' "- **Contacts** and **Channels**, browsable from the home rotation"
+            printf '%s\n' "- **Messages** one per screen, with timestamps, reply, delete, and scrolling for"
+            printf '%s\n' "  anything longer than the display holds"
+            printf '%s\n' "- **Send** from a canned list, editable on the device, stored in \`/cj_canned.txt\`"
+            printf '%s\n' "- **On-screen keyboard** for custom messages -- A-Z, 0-9, punctuation, shift"
+            printf '\n'
+            printf '%s\n' "It also wires up hardware upstream leaves unread: the joystick's up/down axis and the"
+            printf '%s\n' "back button (\`PIN_BUTTON1..3\`), which stock MeshCore never polls."
             printf '\n'
             printf '%s\n' "### Flashing (macOS)"
             printf '\n'
@@ -86,7 +118,9 @@ jobs:
             printf '%s\n' "cp *.uf2 \"/Volumes/TRACKER L1/\""
             printf '%s\n' '```'
             printf '\n'
-            printf '%s\n' "The volume ejecting itself is the success signal. Radio settings survive the reflash."
+            printf '%s\n' "The volume ejecting itself is the success signal. Radio settings, node name and your"
+            printf '%s\n' "saved canned messages all survive the reflash -- a UF2 write only replaces the"
+            printf '%s\n' "application region. The on-device message log does not: it lives in RAM."
             printf '\n'
             printf '%s\n' "### BLE pairing PIN"
             printf '\n'
@@ -95,13 +129,19 @@ jobs:
             printf '%s\n' "To pin it permanently: \`meshcore-cli -s <port> set pin 123456\`, then **reboot** --"
             printf '%s\n' "\`_active_ble_pin\` is only read at startup."
             printf '\n'
+            printf '%s\n' "### Versioning"
+            printf '\n'
+            printf '%s\n' "Two numbers, because they move independently. \`$VERSION\` is the upstream companion"
+            printf '%s\n' "release this tracks; \`ui $UI_VERSION\` is this fork's UI. Both are shown on the splash"
+            printf '%s\n' "screen along with the build's commit hash."
+            printf '\n'
             printf '%s\n' "### Notes"
             printf '\n'
             printf '%s\n' "Both clients share one event stream: \`writeFrame()\` fans out to every enabled"
             printf '%s\n' "interface, so a phone on BLE and a CLI session on USB each see all frames."
             printf '\n'
             printf '%s\n' "Built from upstream [meshcore-dev/MeshCore](https://github.com/meshcore-dev/MeshCore)"
-            printf '%s\n' "\`companion-$VERSION\` plus one build environment. MeshCore is MIT, (c) 2025 Scott Powell."
+            printf '%s\n' "\`companion-$VERSION\`. MeshCore is MIT, (c) 2025 Scott Powell."
             printf '\n'
             printf '%s\n' "**Unofficial community build -- do not report issues with it to upstream MeshCore.**"
             printf '\n'
@@ -125,6 +165,6 @@ jobs:
             echo "Creating release $RELEASE_TAG"
             gh release create "$RELEASE_TAG" out/* \
               --target "$GITHUB_SHA" \
-              --title "Wio Tracker L1 — Companion USB CLI + BLE ($VERSION)" \
+              --title "Wio Tracker L1 — USB CLI + BLE + on-device UI ($VERSION, ui $UI_VERSION)" \
               --notes-file /tmp/release_notes.md
           fi
