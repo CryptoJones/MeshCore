@@ -493,17 +493,19 @@ class CJKeyboardScreen : public UIScreen {
     }
   }
 
+  /* No EXIT key: six labels do not fit across 128px (SAVE alone is 24px against a
+     21px uniform column, so they ran together). The back button already leaves this
+     screen, so the row drops to five and is laid out by measured width. */
   static const char* verbName(int i, bool shift) {
     switch (i) {
       case 0:  return shift ? "Aa" : "aA";   // shows what it will switch TO
       case 1:  return "SP";
       case 2:  return "DEL";
       case 3:  return "SAVE";
-      case 4:  return "SEND";
-      default: return "EXIT";
+      default: return "SEND";
     }
   }
-  static const int VERB_COUNT = 6;
+  static const int VERB_COUNT = 5;
 
   static int rowLen(int r) {
     return (r == KB_ROWS - 1) ? VERB_COUNT : (int) strlen(rowChars(r));
@@ -563,24 +565,42 @@ public:
     for (int r = 0; r < KB_ROWS; r++) {
       int y = 24 + r * 8;
       int n = rowLen(r);
-      int step = display.width() / (n > 0 ? n : 1);
+      if (n <= 0) continue;
+
+      /* Single characters are uniform width, so an even step is fine for them. The
+         verb row has labels of differing widths, so it is measured and the leftover
+         space shared out as equal gaps -- a uniform step overlaps the wider ones. */
+      bool verbs = (r == KB_ROWS - 1);
+      int gap = 0, x = 1;
+      if (verbs) {
+        int total = 0;
+        for (int i = 0; i < n; i++) total += display.getTextWidth(verbName(i, _shift));
+        gap = (display.width() - total) / (n + 1);
+        if (gap < 2) gap = 2;
+        x = gap;
+      }
+      int step = display.width() / n;
 
       for (int col = 0; col < n; col++) {
         bool sel = (r == _row && col == _col);
         char label[6];
-        if (r == KB_ROWS - 1) {
+        if (verbs) {
           StrHelper::strncpy(label, verbName(col, _shift), sizeof(label));
         } else {
           label[0] = keyAt(r, col);
           label[1] = 0;
         }
-        int x = col * step + 1;
+        int w = display.getTextWidth(label);
+        int cx = verbs ? x : (col * step + 1);
+
         display.setColor(sel ? UIColor::warning_txt : UIColor::secondary_txt);
         if (sel) {
-          display.drawRect(x - 1, y - 1, display.getTextWidth(label) + 3, 9);
+          display.drawRect(cx - 1, y - 1, w + 3, 9);
         }
-        display.setCursor(x, y);
+        display.setCursor(cx, y);
         display.print(label);
+
+        if (verbs) x += w + gap;
       }
     }
     return 400;

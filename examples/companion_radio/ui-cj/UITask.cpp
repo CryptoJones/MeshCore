@@ -1243,7 +1243,7 @@ bool CJKeyboardScreen::handleInput(char c) {
           _task->showAlert("Not saved", 1000);
         }
         break;
-      case 4: {                            // SEND
+      default: {                           // SEND
         if (_len == 0) { _task->showAlert("Nothing to send", 900); break; }
         int result = _send->sendText(_text);
         if (result == MSG_SEND_FAILED) {
@@ -1256,9 +1256,6 @@ bool CJKeyboardScreen::handleInput(char c) {
         _task->gotoHomeScreen();
         break;
       }
-      default:                             // EXIT
-        _task->gotoSendScreen();
-        break;
     }
     return true;
   }
