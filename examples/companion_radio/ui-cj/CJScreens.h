@@ -141,13 +141,17 @@ public:
       }
       if (!contactAt(idx, c)) continue;
 
-      // Path length tells you whether a direct route is known -- the single most
-      // useful thing to see next to a name when deciding who to message.
+      /* Show only whether a route is known, not a hop count.
+         out_path_len read from this slot does not agree with what the companion
+         protocol reports for the same contact (screen showed 64 where the protocol
+         said 0), so the numeric value is not trustworthy enough to display. The
+         OUT_PATH_UNKNOWN sentinel is still meaningful: it is the difference between
+         "I have a path to this node" and "I will have to flood". */
       char line[64];
-      if (c.out_path_len == 0xFF) {
-        sprintf(line, "%.20s", c.name);
+      if (c.out_path_len == OUT_PATH_UNKNOWN) {
+        sprintf(line, "%.18s  ?", c.name);     // no known route -- will flood
       } else {
-        sprintf(line, "%.16s %dh", c.name, (int) c.out_path_len);
+        sprintf(line, "%.20s", c.name);
       }
       drawRow(display, row, line, idx == _sel);
     }
