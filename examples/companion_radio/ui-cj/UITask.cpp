@@ -112,7 +112,6 @@ class HomeScreen : public UIScreen {
     RECENT,
     CONTACTS,     // ui-cj
     CHANNELS,     // ui-cj
-    MESSAGES,     // ui-cj
     RADIO,
     BLUETOOTH,
     ADVERT,
@@ -308,14 +307,6 @@ public:
       display.setTextSize(1);
       display.setColor(UIColor::secondary_txt);
       display.drawTextCentered(display.width() / 2, 43, "Channels - press");
-    } else if (_page == HomePage::MESSAGES) {
-      display.setColor(UIColor::primary_txt);
-      display.setTextSize(2);
-      sprintf(tmp, "%d", _task->getMsgLog()->count());
-      display.drawTextCentered(display.width() / 2, 22, tmp);
-      display.setTextSize(1);
-      display.setColor(UIColor::secondary_txt);
-      display.drawTextCentered(display.width() / 2, 43, "Messages - press");
     } else if (_page == HomePage::RADIO) {
       display.setColor(UIColor::primary_txt);
       display.setTextSize(1);
@@ -490,16 +481,16 @@ public:
     // click), KEY_LEFT and KEY_RIGHT (joystick). There is no up/down axis, and
     // triple-click is swallowed by the buzzer toggle before screens see it. So the
     // new sections are home PAGES entered with ENTER, not separate hotkeys.
+    if (c == KEY_ENTER && _page == HomePage::FIRST) {
+      _task->gotoMsgLogScreen();
+      return true;
+    }
     if (c == KEY_ENTER && _page == HomePage::CONTACTS) {
       _task->gotoContactsScreen();
       return true;
     }
     if (c == KEY_ENTER && _page == HomePage::CHANNELS) {
       _task->gotoChannelsScreen();
-      return true;
-    }
-    if (c == KEY_ENTER && _page == HomePage::MESSAGES) {
-      _task->gotoMsgLogScreen();
       return true;
     }
     if (c == KEY_LEFT || c == KEY_PREV) {
@@ -1153,36 +1144,42 @@ bool CJContactsScreen::handleInput(char c) {
 
 bool CJMsgLogScreen::handleInput(char c) {
   int count = _log->count();
-  int rows = count + 1;                 // + Back
 
-  if (_detail) {
-    // Nothing to scroll in the detail view, so LEFT/RIGHT become the two actions.
-    if (c == KEY_CANCEL || c == KEY_LEFT || c == KEY_PREV) { _detail = false; return true; }
-    if (c == KEY_UP) { _sel--; clampWindow(count); return true; }
-    if (c == KEY_DOWN) { _sel++; clampWindow(count); return true; }
-    if (c == KEY_RIGHT || c == KEY_NEXT) {
-      // Promote this message to a canned reply -- how the canned list grows
-      // without typing: keep wording someone already sent you.
-      const LoggedMsg* m = _log->get(_sel);
-      if (m != NULL && _task->getCanned()->add(m->text)) {
-        _task->showAlert("Saved as canned", 1200);
-      } else {
-        _task->showAlert("Not saved", 1000);
-      }
+  if (count == 0) {                       // nothing to page through
+    if (c == KEY_ENTER || c == KEY_SELECT || c == KEY_CANCEL) {
+      _task->gotoHomeScreen();
       return true;
     }
-    if (c == KEY_ENTER || c == KEY_SELECT) { _detail = false; return true; }
     return false;
   }
 
-  if (c == KEY_UP || c == KEY_LEFT || c == KEY_PREV) { _sel--; clampWindow(rows); return true; }
-  if (c == KEY_DOWN || c == KEY_RIGHT || c == KEY_NEXT) { _sel++; clampWindow(rows); return true; }
+  // LEFT/RIGHT page between messages; UP/DOWN choose what ENTER will do.
+  if (c == KEY_LEFT || c == KEY_PREV) { _sel--; clampSel(); return true; }
+  if (c == KEY_RIGHT || c == KEY_NEXT) { _sel++; clampSel(); return true; }
+  if (c == KEY_UP) { _action = (_action + ACTION_COUNT - 1) % ACTION_COUNT; return true; }
+  if (c == KEY_DOWN) { _action = (_action + 1) % ACTION_COUNT; return true; }
   if (c == KEY_CANCEL) { _task->gotoHomeScreen(); return true; }
+
   if (c == KEY_ENTER || c == KEY_SELECT) {
-    if (_sel >= count) {                // Back row
-      _task->gotoHomeScreen();
-    } else if (count > 0) {
-      _detail = true;
+    const LoggedMsg* m = _log->get(_sel);
+    switch (_action) {
+      case 0:   // Save as canned -- builds the quick-reply list without typing
+        if (m != NULL && _task->getCanned()->add(m->text)) {
+          _task->showAlert("Saved as canned", 1200);
+        } else {
+          _task->showAlert("Not saved", 1000);
+        }
+        break;
+      case 1:   // Delete
+        if (_log->remove(_sel)) {
+          _task->showAlert("Deleted", 900);
+          clampSel();
+          if (_log->count() == 0) _task->gotoHomeScreen();
+        }
+        break;
+      default:
+        _task->gotoHomeScreen();
+        break;
     }
     return true;
   }

@@ -21,6 +21,12 @@
 #define MSGLOG_NAME_LEN   32
 #define MSGLOG_TEXT_LEN   96
 
+/* How much of a message body fits on screen above the action line. The display is
+   128x64: the body runs from y=14 to the footer rule at y=52, which is four lines of
+   roughly 21 characters. Anything longer is truncated rather than allowed to overflow
+   into the footer -- overflowing text soft-wraps and collides. */
+#define MSGLOG_BODY_CHARS 84
+
 struct LoggedMsg {
   char from[MSGLOG_NAME_LEN];
   char text[MSGLOG_TEXT_LEN];
@@ -61,4 +67,26 @@ public:
   }
 
   void clear() { _count = 0; _head = 0; }
+
+  /* Remove one entry by logical (newest-first) index. The buffer is small enough that
+     compacting through a temporary is simpler and safer than juggling head/tail. */
+  bool remove(int i) {
+    if (i < 0 || i >= _count) return false;
+
+    LoggedMsg tmp[MSGLOG_CAPACITY];
+    int n = 0;
+    for (int k = 0; k < _count; k++) {
+      if (k == i) continue;
+      tmp[n++] = *get(k);          // newest-first
+    }
+
+    _count = 0;
+    _head = 0;
+    for (int k = n - 1; k >= 0; k--) {   // re-insert oldest-first
+      _msgs[_head] = tmp[k];
+      _head = (_head + 1) % MSGLOG_CAPACITY;
+      _count++;
+    }
+    return true;
+  }
 };

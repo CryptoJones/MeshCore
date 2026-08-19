@@ -87,11 +87,12 @@ protected:
       display.print(">");
     }
     display.setColor(selected ? UIColor::primary_txt : UIColor::secondary_txt);
-    display.setCursor(8, y);
 
+    // MUST ellipsize, not print(): a row wider than the display soft-wraps onto the
+    // next row's line and the two collide. This is what garbled the message list.
     char filtered[64];
     display.translateUTF8ToBlocks(filtered, text, sizeof(filtered));
-    display.print(filtered);
+    display.drawTextEllipsized(8, y, display.width() - 10, filtered);
   }
 
   void drawEmpty(DisplayDriver& display, const char* msg) {
@@ -151,75 +152,101 @@ public:
 
 /* ------------------------------------------------------------- message log ---- */
 
-class CJMsgLogScreen : public CJListScreen {
+/* One message per screen. A 128x64 display cannot show a useful preview of several
+   messages at once -- truncating to ~14 characters told you nothing, and long text
+   overflowed into the row below. So each message gets the whole screen and you page
+   between them.
+
+   All four axes earn their keep here:
+     LEFT/RIGHT  which message      UP/DOWN  which action      ENTER  run it
+*/
+class CJMsgLogScreen : public UIScreen {
   UITask* _task;
   MsgLog* _log;
-  bool _detail;      // false = list, true = full text of selected message
+  int _sel;       // which message (0 = newest)
+  int _action;    // 0 = Save as canned, 1 = Delete, 2 = Back
+
+  static const int ACTION_COUNT = 3;
+
+  static const char* actionName(int a) {
+    switch (a) {
+      case 0:  return "Save as canned";
+      case 1:  return "Delete";
+      default: return "Back";
+    }
+  }
+
+  void clampSel() {
+    int n = _log->count();
+    if (n <= 0) { _sel = 0; return; }
+    if (_sel < 0) _sel = n - 1;
+    if (_sel >= n) _sel = 0;
+  }
 
 public:
-  CJMsgLogScreen(UITask* task, MsgLog* log) : _task(task), _log(log), _detail(false) { }
+  CJMsgLogScreen(UITask* task, MsgLog* log) : _task(task), _log(log), _sel(0), _action(0) { }
 
-  void reset() { _sel = 0; _top = 0; _detail = false; }
-  const LoggedMsg* selected() const { return _log->get(_sel); }
+  void reset() { _sel = 0; _action = 0; }
 
   int render(DisplayDriver& display) override {
     int count = _log->count();
-    clampWindow(count + 1);                // + Back row
+    clampSel();
+
+    char tmp[48];
+    display.setTextSize(1);
 
     if (count == 0) {
-      drawHeader(display, "Messages", 0, 0);
-      drawEmpty(display, "none received");
-      drawRow(display, 2, "< Back", true);
+      display.setCursor(0, 0);
+      display.setColor(UIColor::corp_blue);
+      display.print("Messages");
+      display.drawRect(0, 11, display.width(), 1);
+      display.setColor(UIColor::secondary_txt);
+      display.drawTextCentered(display.width() / 2, 30, "none received");
+      display.drawTextCentered(display.width() / 2, 50, "press to exit");
       return 2000;
     }
 
-    if (_detail) {
-      const LoggedMsg* m = _log->get(_sel);
-      if (m == NULL) { _detail = false; return 100; }
+    const LoggedMsg* m = _log->get(_sel);
+    if (m == NULL) return 500;
 
-      char hdr[40];
-      if (m->is_channel) {
-        sprintf(hdr, "#%.26s", m->from);
-      } else if (m->path_len == 0xFF) {
-        sprintf(hdr, "(D) %.24s", m->from);
-      } else {
-        sprintf(hdr, "(%d) %.24s", (int) m->path_len, m->from);
-      }
-      drawHeader(display, hdr, _sel, _log->count());
-
-      display.setCursor(0, CJ_LIST_TOP);
-      display.setColor(UIColor::primary_txt);
-      char filtered[MSGLOG_TEXT_LEN];
-      display.translateUTF8ToBlocks(filtered, m->text, sizeof(filtered));
-      display.printWordWrap(filtered, display.width());
-
-      display.setColor(UIColor::secondary_txt);
-      display.setCursor(0, display.height() - 9);
-      display.print("<back  save>");
-      return 1000;
+    // Header: who it is from, and position in the stack.
+    if (m->is_channel) {
+      sprintf(tmp, "#%.16s", m->from);
+    } else if (m->path_len == 0xFF) {
+      sprintf(tmp, "%.16s (D)", m->from);
+    } else {
+      sprintf(tmp, "%.14s (%d)", m->from, (int) m->path_len);
     }
+    char hdr[48];
+    display.translateUTF8ToBlocks(hdr, tmp, sizeof(hdr));
+    display.setCursor(0, 0);
+    display.setColor(UIColor::corp_blue);
+    display.drawTextEllipsized(0, 0, display.width() - 32, hdr);
 
-    drawHeader(display, "Messages", _sel, count + 1);
-    for (int row = 0; row < CJ_MAX_VISIBLE; row++) {
-      int idx = _top + row;
-      if (idx > count) break;
-      if (idx == count) {                  // Back row
-        drawRow(display, row, "< Back", idx == _sel);
-        continue;
-      }
-      const LoggedMsg* m = _log->get(idx);
-      if (m == NULL) break;
+    sprintf(tmp, "<%d/%d>", _sel + 1, count);
+    display.setCursor(display.width() - display.getTextWidth(tmp) - 2, 0);
+    display.print(tmp);
+    display.drawRect(0, 11, display.width(), 1);
 
-      char line[64];
-      sprintf(line, m->is_channel ? "#%.9s: %.14s" : "%.10s: %.14s", m->from, m->text);
-      drawRow(display, row, line, idx == _sel);
-    }
+    // Body. Bounded so it cannot run into the action line at the bottom: roughly
+    // four lines of ~21 characters between y=14 and the footer rule.
+    char body[MSGLOG_BODY_CHARS + 2];
+    StrHelper::strncpy(body, m->text, sizeof(body));
+    char filtered[sizeof(body)];
+    display.translateUTF8ToBlocks(filtered, body, sizeof(filtered));
+
+    display.setCursor(0, 14);
+    display.setColor(UIColor::primary_txt);
+    display.printWordWrap(filtered, display.width());
+
+    // Action selector, always at the bottom.
+    display.drawRect(0, display.height() - 12, display.width(), 1);
+    display.setColor(UIColor::warning_txt);
+    display.drawTextEllipsized(0, display.height() - 9, display.width() - 2, actionName(_action));
     return 1000;
   }
 
   bool handleInput(char c) override;   // defined in UITask.cpp
-  bool inDetail() const { return _detail; }
-  void setDetail(bool d) { _detail = d; }
 };
 
 /* ---------------------------------------------------------------- channels ---- */
