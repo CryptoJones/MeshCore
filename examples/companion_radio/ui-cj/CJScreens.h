@@ -112,11 +112,18 @@ public:
 
   int selectedIndex() const { return _sel; }
 
-  bool getSelected(ContactInfo& dest) {
-    int n = the_mesh.getNumContacts();
-    if (n <= 0 || _sel < 0 || _sel >= n) return false;
-    return the_mesh.getContactByIdx(_sel, dest);
+  /* getContactByIdx() indexes the RAW contacts array, whose first MAX_ANON_CONTACTS
+     slots are reserved anon entries that are memset to zero at init. getNumContacts()
+     already excludes them, so a caller counting with one and indexing with the other
+     reads blank records -- which rendered as a nameless " 0h" row. Upstream's own
+     iterator documents the fix: startContactsIterator() begins at MAX_ANON_CONTACTS,
+     "skip the anon entries". */
+  static bool contactAt(int nth, ContactInfo& dest) {
+    if (nth < 0 || nth >= the_mesh.getNumContacts()) return false;
+    return the_mesh.getContactByIdx(MAX_ANON_CONTACTS + nth, dest);
   }
+
+  bool getSelected(ContactInfo& dest) { return contactAt(_sel, dest); }
 
   int render(DisplayDriver& display) override {
     int count = the_mesh.getNumContacts();
@@ -132,7 +139,7 @@ public:
         drawRow(display, row, "< Back", idx == _sel);
         continue;
       }
-      if (!the_mesh.getContactByIdx(idx, c)) continue;
+      if (!contactAt(idx, c)) continue;
 
       // Path length tells you whether a direct route is known -- the single most
       // useful thing to see next to a name when deciding who to message.
