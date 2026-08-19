@@ -6,13 +6,18 @@
    because the design puts the interface in the phone app. These screens add the parts
    that make the hardware usable on its own.
 
-   INPUT CONSTRAINT: this board generates only KEY_ENTER (button click), KEY_LEFT and
-   KEY_RIGHT (joystick). There is no up/down axis, and triple-click is consumed by the
-   buzzer toggle before any screen sees it. Everything below is built for three keys:
-   LEFT/RIGHT move the selection, ENTER acts, and each list carries a trailing "Back"
-   row because there is no key to spare for cancel.
+   INPUT: the L1 has a full 5-way joystick plus a back button, but stock MeshCore only
+   reads left/right/press. ui-cj wires up, down and back itself (see UITask.cpp), so:
 
-   Contacts and Messages are pages in the home screen rotation, opened with ENTER.
+     Contacts / Messages / canned list  vertical lists  -- UP/DOWN scroll, ENTER acts
+     Channels                           horizontal pages -- LEFT/RIGHT flip, ENTER acts
+     Back button                        exits any screen (KEY_CANCEL)
+
+   Vertical things use vertical keys and horizontal things use horizontal keys, which
+   is what makes this read consistently with the stock home screen. LEFT/RIGHT are kept
+   as aliases in the lists, and the trailing "Back" row stays as a fallback.
+
+   Contacts, Channels and Messages are pages in the home rotation, opened with ENTER.
 */
 
 #include <Arduino.h>
@@ -52,14 +57,22 @@ protected:
     if (_top < 0) _top = 0;
   }
 
-  void drawHeader(DisplayDriver& display, const char* title, int count) {
+  /* `pos`/`total` render as "<2/9>" on the right. The chevrons matter: LEFT/RIGHT are
+     the only movement keys this board has, so a vertical list would otherwise read as
+     though RIGHT means "down". Everywhere else in this UI left/right flips between
+     options, and the header is what reconciles the two. */
+  void drawHeader(DisplayDriver& display, const char* title, int pos, int total) {
     char tmp[24];
     display.setTextSize(1);
     display.setCursor(0, 0);
     display.setColor(UIColor::corp_blue);
     display.print(title);
 
-    sprintf(tmp, "%d", count);
+    if (total > 0) {
+      sprintf(tmp, "<%d/%d>", pos + 1, total);
+    } else {
+      sprintf(tmp, "<0>");
+    }
     display.setCursor(display.width() - display.getTextWidth(tmp) - 2, 0);
     display.print(tmp);
 
@@ -108,7 +121,7 @@ public:
     int count = the_mesh.getNumContacts();
     int rows = count + 1;                  // trailing Back row
     clampWindow(rows);
-    drawHeader(display, "Contacts", count);
+    drawHeader(display, "Contacts", _sel, rows);
 
     ContactInfo c;
     for (int row = 0; row < CJ_MAX_VISIBLE; row++) {
@@ -154,7 +167,7 @@ public:
     clampWindow(count + 1);                // + Back row
 
     if (count == 0) {
-      drawHeader(display, "Messages", 0);
+      drawHeader(display, "Messages", 0, 0);
       drawEmpty(display, "none received");
       drawRow(display, 2, "< Back", true);
       return 2000;
@@ -172,7 +185,7 @@ public:
       } else {
         sprintf(hdr, "(%d) %.24s", (int) m->path_len, m->from);
       }
-      drawHeader(display, hdr, 0);
+      drawHeader(display, hdr, _sel, _log->count());
 
       display.setCursor(0, CJ_LIST_TOP);
       display.setColor(UIColor::primary_txt);
@@ -186,7 +199,7 @@ public:
       return 1000;
     }
 
-    drawHeader(display, "Messages", count);
+    drawHeader(display, "Messages", _sel, count + 1);
     for (int row = 0; row < CJ_MAX_VISIBLE; row++) {
       int idx = _top + row;
       if (idx > count) break;
@@ -245,28 +258,72 @@ public:
 
   bool getSelected(ChannelDetails& dest) { return channelAt(_sel, dest); }
 
+  /* One channel per view, paged with LEFT/RIGHT -- deliberately the same shape as the
+     home screen's pages rather than a scrolling list. There are only ever a handful of
+     channels, so paging costs nothing and the navigation reads identically to the rest
+     of the UI. Contacts and the message log stay as lists, where scanning several rows
+     at once is worth more. */
   int render(DisplayDriver& display) override {
     int count = channelCount();
-    int rows = count + 1;
-    clampWindow(rows);
-    drawHeader(display, "Channels", count);
+    int pages = count + 1;                 // + Back page
+    clampWindow(pages);
+
+    char tmp[40];
+    display.setTextSize(1);
+    display.setCursor(0, 0);
+    display.setColor(UIColor::corp_blue);
+    display.print("Channels");
+
+    if (count > 0) {
+      sprintf(tmp, "<%d/%d>", _sel + 1, pages);
+    } else {
+      sprintf(tmp, "<0>");
+    }
+    display.setCursor(display.width() - display.getTextWidth(tmp) - 2, 0);
+    display.print(tmp);
+    display.drawRect(0, 11, display.width(), 1);
+
+    // Page dots, matching the home screen's indicator.
+    int y = 16;
+    int x = display.width() / 2 - 5 * (pages - 1);
+    for (int i = 0; i < pages; i++, x += 10) {
+      if (i == _sel) {
+        display.fillRect(x - 1, y - 1, 4, 4);
+      } else {
+        display.fillRect(x, y, 2, 2);
+      }
+    }
 
     if (count == 0) {
-      drawEmpty(display, "none configured");
+      display.setColor(UIColor::secondary_txt);
+      display.setTextSize(1);
+      display.drawTextCentered(display.width() / 2, 34, "none configured");
+      return 2000;
+    }
+
+    if (_sel >= count) {                   // Back page
+      display.setColor(UIColor::primary_txt);
+      display.setTextSize(2);
+      display.drawTextCentered(display.width() / 2, 30, "Back");
+      display.setTextSize(1);
+      display.setColor(UIColor::secondary_txt);
+      display.drawTextCentered(display.width() / 2, 52, "press to exit");
+      return 1000;
     }
 
     ChannelDetails cd;
-    for (int row = 0; row < CJ_MAX_VISIBLE; row++) {
-      int idx = _top + row;
-      if (idx >= rows) break;
-      if (idx == count) {
-        drawRow(display, row, "< Back", idx == _sel);
-        continue;
-      }
-      if (!channelAt(idx, cd)) continue;
-      char line[64];
-      sprintf(line, "#%.20s", cd.name);
-      drawRow(display, row, line, idx == _sel);
+    if (channelAt(_sel, cd)) {
+      char filtered[sizeof(cd.name) + 2];
+      sprintf(tmp, "#%.30s", cd.name);
+      display.translateUTF8ToBlocks(filtered, tmp, sizeof(filtered));
+
+      display.setColor(UIColor::primary_txt);
+      display.setTextSize(2);
+      display.drawTextCentered(display.width() / 2, 30, filtered);
+
+      display.setTextSize(1);
+      display.setColor(UIColor::secondary_txt);
+      display.drawTextCentered(display.width() / 2, 52, "press to post");
     }
     return 1000;
   }
@@ -341,7 +398,7 @@ public:
 
     char hdr[40];
     sprintf(hdr, _target == CHANNEL ? "To #%.17s" : "To %.18s", recipientName());
-    drawHeader(display, hdr, count);
+    drawHeader(display, hdr, _sel, rows);
 
     for (int row = 0; row < CJ_MAX_VISIBLE; row++) {
       int idx = _top + row;

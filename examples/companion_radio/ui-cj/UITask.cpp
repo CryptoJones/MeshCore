@@ -36,6 +36,23 @@ extern DataStore store;
 
 #include "icons.h"
 
+/* The Wio Tracker L1 has a FULL 5-way joystick plus a separate back button:
+     PIN_BUTTON1 back / menu      PIN_BUTTON2 up     PIN_BUTTON3 down
+     PIN_BUTTON4 left             PIN_BUTTON5 right  PIN_BUTTON6 press
+   Stock MeshCore only ever reads left, right and press, which is why up/down appear
+   dead on this firmware while Meshtastic handles them fine -- it is a firmware gap,
+   not a hardware limit.
+
+   These objects are declared HERE rather than in variants/wio-tracker-l1/target.cpp
+   (where user_btn/joystick_left/joystick_right live) because that file is upstream-
+   maintained and editing it would cost us conflict-free syncs. The pins come from
+   variant.h, which is already in scope. */
+#if UI_HAS_JOYSTICK && defined(JOYSTICK_UP) && defined(JOYSTICK_DOWN)
+  #define CJ_HAS_UPDOWN 1
+  static MomentaryButton cj_joy_up(JOYSTICK_UP, 1000, true, false, false);
+  static MomentaryButton cj_joy_down(JOYSTICK_DOWN, 1000, true, false, false);
+#endif
+
 class SplashScreen : public UIScreen {
   UITask* _task;
   unsigned long dismiss_after;
@@ -633,6 +650,10 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
 #if defined(PIN_USER_BTN)
   user_btn.begin();
 #endif
+#ifdef CJ_HAS_UPDOWN
+  cj_joy_up.begin();
+  cj_joy_down.begin();
+#endif
 #if defined(PIN_USER_BTN_ANA)
   analog_btn.begin();
 #endif
@@ -822,7 +843,23 @@ void UITask::loop() {
   ev = back_btn.check();
   if (ev == BUTTON_EVENT_TRIPLE_CLICK) {
     c = handleTripleClick(KEY_SELECT);
+  } else if (ev == BUTTON_EVENT_CLICK) {
+    c = checkDisplayOn(KEY_CANCEL);   // ui-cj: the back button now actually goes back
   }
+#ifdef CJ_HAS_UPDOWN
+  ev = cj_joy_up.check();
+  if (ev == BUTTON_EVENT_CLICK) {
+    c = checkDisplayOn(KEY_UP);
+  } else if (ev == BUTTON_EVENT_LONG_PRESS) {
+    c = handleLongPress(KEY_UP);
+  }
+  ev = cj_joy_down.check();
+  if (ev == BUTTON_EVENT_CLICK) {
+    c = checkDisplayOn(KEY_DOWN);
+  } else if (ev == BUTTON_EVENT_LONG_PRESS) {
+    c = handleLongPress(KEY_DOWN);
+  }
+#endif
 #elif defined(PIN_USER_BTN)
   int ev = user_btn.check();
   if (ev == BUTTON_EVENT_CLICK) {
@@ -1062,8 +1099,11 @@ bool CJChannelsScreen::handleInput(char c) {
   int count = CJChannelsScreen::channelCount();
   int rows = count + 1;
 
+  // Channels are paged horizontally on purpose (matching the home screen), so this
+  // one keeps LEFT/RIGHT rather than adopting UP/DOWN.
   if (c == KEY_LEFT || c == KEY_PREV) { _sel--; clampWindow(rows); return true; }
   if (c == KEY_RIGHT || c == KEY_NEXT) { _sel++; clampWindow(rows); return true; }
+  if (c == KEY_CANCEL) { _task->gotoHomeScreen(); return true; }
   if (c == KEY_ENTER || c == KEY_SELECT) {
     if (_sel >= count) {
       _task->gotoHomeScreen();
@@ -1097,8 +1137,9 @@ bool CJContactsScreen::handleInput(char c) {
   int count = the_mesh.getNumContacts();
   int rows = count + 1;                 // + Back
 
-  if (c == KEY_LEFT || c == KEY_PREV) { _sel--; clampWindow(rows); return true; }
-  if (c == KEY_RIGHT || c == KEY_NEXT) { _sel++; clampWindow(rows); return true; }
+  if (c == KEY_UP || c == KEY_LEFT || c == KEY_PREV) { _sel--; clampWindow(rows); return true; }
+  if (c == KEY_DOWN || c == KEY_RIGHT || c == KEY_NEXT) { _sel++; clampWindow(rows); return true; }
+  if (c == KEY_CANCEL) { _task->gotoHomeScreen(); return true; }
   if (c == KEY_ENTER || c == KEY_SELECT) {
     if (_sel >= count) {                // Back row
       _task->gotoHomeScreen();
@@ -1116,7 +1157,9 @@ bool CJMsgLogScreen::handleInput(char c) {
 
   if (_detail) {
     // Nothing to scroll in the detail view, so LEFT/RIGHT become the two actions.
-    if (c == KEY_LEFT || c == KEY_PREV) { _detail = false; return true; }
+    if (c == KEY_CANCEL || c == KEY_LEFT || c == KEY_PREV) { _detail = false; return true; }
+    if (c == KEY_UP) { _sel--; clampWindow(count); return true; }
+    if (c == KEY_DOWN) { _sel++; clampWindow(count); return true; }
     if (c == KEY_RIGHT || c == KEY_NEXT) {
       // Promote this message to a canned reply -- how the canned list grows
       // without typing: keep wording someone already sent you.
@@ -1132,8 +1175,9 @@ bool CJMsgLogScreen::handleInput(char c) {
     return false;
   }
 
-  if (c == KEY_LEFT || c == KEY_PREV) { _sel--; clampWindow(rows); return true; }
-  if (c == KEY_RIGHT || c == KEY_NEXT) { _sel++; clampWindow(rows); return true; }
+  if (c == KEY_UP || c == KEY_LEFT || c == KEY_PREV) { _sel--; clampWindow(rows); return true; }
+  if (c == KEY_DOWN || c == KEY_RIGHT || c == KEY_NEXT) { _sel++; clampWindow(rows); return true; }
+  if (c == KEY_CANCEL) { _task->gotoHomeScreen(); return true; }
   if (c == KEY_ENTER || c == KEY_SELECT) {
     if (_sel >= count) {                // Back row
       _task->gotoHomeScreen();
@@ -1149,8 +1193,12 @@ bool CJSendScreen::handleInput(char c) {
   int count = _canned->count();
   int rows = count + 1;                 // + Back
 
-  if (c == KEY_LEFT || c == KEY_PREV) { _sel--; clampWindow(rows); return true; }
-  if (c == KEY_RIGHT || c == KEY_NEXT) { _sel++; clampWindow(rows); return true; }
+  if (c == KEY_UP || c == KEY_LEFT || c == KEY_PREV) { _sel--; clampWindow(rows); return true; }
+  if (c == KEY_DOWN || c == KEY_RIGHT || c == KEY_NEXT) { _sel++; clampWindow(rows); return true; }
+  if (c == KEY_CANCEL) {
+    if (_target == CHANNEL) { _task->gotoChannelsScreen(); } else { _task->gotoContactsScreen(); }
+    return true;
+  }
   if (c == KEY_ENTER || c == KEY_SELECT) {
     if (_sel >= count) {                // Back row -- return to the list we came from
       if (_target == CHANNEL) {
