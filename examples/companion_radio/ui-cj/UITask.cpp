@@ -1247,7 +1247,7 @@ bool CJContactsScreen::handleInput(char c) {
 }
 
 bool CJMsgLogScreen::handleInput(char c) {
-  int count = _log->count();
+  int count = viewCount();
 
   if (count == 0) {                       // nothing to page through
     if (c == KEY_ENTER || c == KEY_SELECT || c == KEY_CANCEL) {
@@ -1257,13 +1257,42 @@ bool CJMsgLogScreen::handleInput(char c) {
     return false;
   }
 
-  // LEFT/RIGHT page between messages; UP/DOWN choose what ENTER will do.
+  /* Scroll mode borrows UP/DOWN for the text window. It is a mode rather than a
+     chord because every key is already spoken for: LEFT/RIGHT page messages,
+     UP/DOWN pick the action, ENTER runs it. Back leaves the mode, not the screen. */
+  if (_scrolling) {
+    const LoggedMsg* m = viewGet(_sel);
+    int total = (m == NULL) ? 0 : (int) strlen(m->text);
+
+    if (c == KEY_UP) {
+      _scroll -= SCROLL_STEP;
+      if (_scroll < 0) _scroll = 0;
+      return true;
+    }
+    if (c == KEY_DOWN) {
+      // Stop when the tail is on screen; scrolling into blank space is disorienting.
+      if (_scroll + MSGLOG_BODY_CHARS < total) _scroll += SCROLL_STEP;
+      return true;
+    }
+    if (c == KEY_CANCEL || c == KEY_ENTER || c == KEY_SELECT) {
+      _scrolling = false;
+      return true;
+    }
+    // Paging to another message ends the mode, since the offset means nothing there.
+    if (c == KEY_LEFT || c == KEY_PREV)  { _scrolling = false; _scroll = 0; _sel--; clampSel(); return true; }
+    if (c == KEY_RIGHT || c == KEY_NEXT) { _scrolling = false; _scroll = 0; _sel++; clampSel(); return true; }
+    return false;
+  }
+
+  int n = actionCount();
+  if (_action >= n) _action = n - 1;
+
   // Any movement disarms a pending delete, so an armed confirm can never be spent on
   // a different message or a different action than the one you armed it on.
-  if (c == KEY_LEFT || c == KEY_PREV) { _confirm = false; _sel--; clampSel(); return true; }
-  if (c == KEY_RIGHT || c == KEY_NEXT) { _confirm = false; _sel++; clampSel(); return true; }
-  if (c == KEY_UP) { _confirm = false; _action = (_action + ACTION_COUNT - 1) % ACTION_COUNT; return true; }
-  if (c == KEY_DOWN) { _confirm = false; _action = (_action + 1) % ACTION_COUNT; return true; }
+  if (c == KEY_LEFT || c == KEY_PREV) { _confirm = false; _scroll = 0; _sel--; clampSel(); return true; }
+  if (c == KEY_RIGHT || c == KEY_NEXT) { _confirm = false; _scroll = 0; _sel++; clampSel(); return true; }
+  if (c == KEY_UP) { _confirm = false; _action = (_action + n - 1) % n; return true; }
+  if (c == KEY_DOWN) { _confirm = false; _action = (_action + 1) % n; return true; }
   if (c == KEY_CANCEL) {
     if (_confirm) { _confirm = false; return true; }   // back cancels the confirm first
     _task->gotoHomeScreen();
@@ -1271,6 +1300,7 @@ bool CJMsgLogScreen::handleInput(char c) {
   }
 
   if (c == KEY_ENTER || c == KEY_SELECT) {
+    bool ov = overflows();
     if (_action == 0) {                 // Reply
       if (!_task->gotoReplyScreen(viewGet(_sel))) {
         _task->showAlert("No such contact", 1200);
@@ -1282,10 +1312,13 @@ bool CJMsgLogScreen::handleInput(char c) {
         _confirm = false;
         if (_log->remove(logIndex(_sel))) {
           _task->showAlert("Deleted", 900);
+          _scroll = 0;
           clampSel();
           if (viewCount() == 0) _task->gotoHomeScreen();
         }
       }
+    } else if (_action == 2 && ov) {    // Scroll
+      _scrolling = true;
     } else {                            // Back
       _task->gotoHomeScreen();
     }

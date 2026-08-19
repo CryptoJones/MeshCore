@@ -175,20 +175,33 @@ class CJMsgLogScreen : public UIScreen {
   UITask* _task;
   MsgLog* _log;
   int _sel;       // which message within the current view (0 = newest)
-  int _action;    // 0 = Reply, 1 = Delete, 2 = Back
+  int _action;    // Reply / Delete / [Scroll] / Back -- see actionName()
   bool _confirm;  // Delete is armed and waiting for a second press
+  bool _scrolling;  // body-scroll mode: UP/DOWN move the text window
+  int  _scroll;     // first character of the visible window
 
   /* When set, the view is restricted to one origin -- used to read a single
      channel's traffic from the Channels screen instead of the mixed log. */
   char _filter[MSGLOG_NAME_LEN];
   bool _filtered;
 
-  static const int ACTION_COUNT = 3;
+  /* Scroll only exists when the message does not fit, so short messages keep the
+     three-action list and never make you page past an action you cannot use. */
+  static const int SCROLL_STEP = 21;   // ~one rendered line at 6px on a 128px panel
 
-  static const char* actionName(int a) {
+  bool overflows() const {
+    const LoggedMsg* m = viewGet(_sel);
+    return m != NULL && (int) strlen(m->text) > MSGLOG_BODY_CHARS;
+  }
+
+  int actionCount() const { return overflows() ? 4 : 3; }
+
+  const char* actionName(int a) const {
+    bool ov = overflows();
     switch (a) {
       case 0:  return "Reply";
       case 1:  return "Delete";
+      case 2:  return ov ? "Scroll" : "Back";
       default: return "Back";
     }
   }
@@ -234,12 +247,14 @@ class CJMsgLogScreen : public UIScreen {
 
 public:
   CJMsgLogScreen(UITask* task, MsgLog* log)
-    : _task(task), _log(log), _sel(0), _action(0), _confirm(false), _filtered(false) {
+    : _task(task), _log(log), _sel(0), _action(0), _confirm(false),
+      _scrolling(false), _scroll(0), _filtered(false) {
     _filter[0] = 0;
   }
 
-  void reset() { _sel = 0; _action = 0; _confirm = false; }
+  void reset() { _sel = 0; _action = 0; _confirm = false; _scrolling = false; _scroll = 0; }
   void disarm() { _confirm = false; }
+  void resetScroll() { _scroll = 0; _scrolling = false; }
 
   void clearFilter() { _filtered = false; _filter[0] = 0; _sel = 0; _action = 0; }
   void setFilter(const char* origin) {
@@ -292,13 +307,17 @@ public:
 
     // Body. Bounded so it cannot run into the action line at the bottom: roughly
     // four lines of ~21 characters between y=14 and the footer rule.
-    /* Mark truncation honestly rather than silently cutting: without this the reader
-       cannot tell a short message from the first 84 characters of a long one. */
-    char body[MSGLOG_BODY_CHARS + 4];
-    StrHelper::strncpy(body, m->text, MSGLOG_BODY_CHARS + 1);
-    if ((int) strlen(m->text) > MSGLOG_BODY_CHARS) {
-      strcat(body, "...");
-    }
+    /* Visible window into the message. Both ends are marked so the reader can always
+       tell whether there is more text above or below -- without that, a scrolled view
+       is indistinguishable from a short message. */
+    int total = (int) strlen(m->text);
+    if (_scroll > total) _scroll = 0;
+    char body[MSGLOG_BODY_CHARS + 8];
+    body[0] = 0;
+    if (_scroll > 0) strcat(body, "...");
+    int room = MSGLOG_BODY_CHARS - (int) strlen(body);
+    strncat(body, m->text + _scroll, room);
+    if (_scroll + room < total) strcat(body, "...");
     char filtered[sizeof(body)];
     display.translateUTF8ToBlocks(filtered, body, sizeof(filtered));
 
@@ -309,8 +328,11 @@ public:
     // Action selector, always at the bottom.
     display.drawRect(0, display.height() - 12, display.width(), 1);
     display.setColor(UIColor::warning_txt);
-    display.drawTextEllipsized(0, display.height() - 9, display.width() - 2,
-                               _confirm ? "Delete? press again" : actionName(_action));
+    const char* footer;
+    if (_scrolling)      footer = "SCROLL up/dn  back=done";
+    else if (_confirm)   footer = "Delete? press again";
+    else                 footer = actionName(_action);
+    display.drawTextEllipsized(0, display.height() - 9, display.width() - 2, footer);
     return 1000;
   }
 
