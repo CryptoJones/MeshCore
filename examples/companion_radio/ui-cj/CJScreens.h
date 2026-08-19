@@ -175,12 +175,16 @@ class CJMsgLogScreen : public UIScreen {
   UITask* _task;
   MsgLog* _log;
   int _sel;       // which message (0 = newest)
-  int _action;    // 0 = Delete, 1 = Back
+  int _action;    // 0 = Reply, 1 = Delete, 2 = Back
 
-  static const int ACTION_COUNT = 2;
+  static const int ACTION_COUNT = 3;
 
   static const char* actionName(int a) {
-    return (a == 0) ? "Delete" : "Back";
+    switch (a) {
+      case 0:  return "Reply";
+      case 1:  return "Delete";
+      default: return "Back";
+    }
   }
 
   void clampSel() {

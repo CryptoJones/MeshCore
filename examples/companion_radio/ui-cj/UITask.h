@@ -95,6 +95,7 @@ public:
   void gotoSendChannelScreen();   // to the selected channel
   void gotoKeyboardScreen();      // compose a custom message
   void gotoCannedMgrScreen();     // delete saved canned messages
+  bool gotoReplyScreen(const LoggedMsg* m);   // compose back to a message's origin
   MsgLog* getMsgLog() { return &_msglog; }
   CannedStore* getCanned() { return &_canned; }
   void showAlert(const char* text, int duration_millis);

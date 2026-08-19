@@ -1073,6 +1073,33 @@ void UITask::gotoContactsScreen() {
   setCurrScreen(cj_contacts);
 }
 
+/* Reply to whoever a logged message came from. Channel posts reply to the channel,
+   DMs to the contact -- the log records which, so the target is unambiguous.
+   Returns false when the origin can no longer be resolved (a contact removed since
+   the message arrived), so the caller can say so rather than opening an empty compose. */
+bool UITask::gotoReplyScreen(const LoggedMsg* m) {
+  if (m == NULL) return false;
+
+  if (m->is_channel) {
+    ChannelDetails cd;
+    int n = CJChannelsScreen::channelCount();
+    for (int i = 0; i < n; i++) {
+      if (CJChannelsScreen::channelAt(i, cd) && strcmp(cd.name, m->from) == 0) {
+        ((CJSendScreen *) cj_send)->setChannel(cd);
+        setCurrScreen(cj_send);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  ContactInfo* c = the_mesh.searchContactsByPrefix(m->from);
+  if (c == NULL) return false;
+  ((CJSendScreen *) cj_send)->setRecipient(*c);
+  setCurrScreen(cj_send);
+  return true;
+}
+
 void UITask::gotoCannedMgrScreen() {
   setCurrScreen(cj_cannedmgr);
 }
@@ -1193,7 +1220,11 @@ bool CJMsgLogScreen::handleInput(char c) {
   if (c == KEY_CANCEL) { _task->gotoHomeScreen(); return true; }
 
   if (c == KEY_ENTER || c == KEY_SELECT) {
-    if (_action == 0) {                 // Delete
+    if (_action == 0) {                 // Reply
+      if (!_task->gotoReplyScreen(_log->get(_sel))) {
+        _task->showAlert("No such contact", 1200);
+      }
+    } else if (_action == 1) {          // Delete
       if (_log->remove(_sel)) {
         _task->showAlert("Deleted", 900);
         clampSel();
