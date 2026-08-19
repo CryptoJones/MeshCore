@@ -26,6 +26,7 @@ struct LoggedMsg {
   char text[MSGLOG_TEXT_LEN];
   uint32_t recv_millis;
   uint8_t path_len;   // 0xFF = direct/flood unknown, else hop count
+  bool is_channel;    // true when `from` names a channel rather than a contact
 };
 
 class MsgLog {
@@ -47,8 +48,9 @@ public:
     return &_msgs[slot];
   }
 
-  void add(uint8_t path_len, const char* from_name, const char* text) {
+  void add(uint8_t path_len, const char* from_name, const char* text, bool is_channel = false) {
     LoggedMsg* m = &_msgs[_head];
+    m->is_channel = is_channel;
     StrHelper::strncpy(m->from, from_name == NULL ? "?" : from_name, MSGLOG_NAME_LEN);
     StrHelper::strncpy(m->text, text == NULL ? "" : text, MSGLOG_TEXT_LEN);
     m->recv_millis = millis();

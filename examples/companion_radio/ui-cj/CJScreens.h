@@ -165,7 +165,9 @@ public:
       if (m == NULL) { _detail = false; return 100; }
 
       char hdr[40];
-      if (m->path_len == 0xFF) {
+      if (m->is_channel) {
+        sprintf(hdr, "#%.26s", m->from);
+      } else if (m->path_len == 0xFF) {
         sprintf(hdr, "(D) %.24s", m->from);
       } else {
         sprintf(hdr, "(%d) %.24s", (int) m->path_len, m->from);
@@ -196,7 +198,7 @@ public:
       if (m == NULL) break;
 
       char line[64];
-      sprintf(line, "%.10s: %.14s", m->from, m->text);
+      sprintf(line, m->is_channel ? "#%.9s: %.14s" : "%.10s: %.14s", m->from, m->text);
       drawRow(display, row, line, idx == _sel);
     }
     return 1000;
@@ -207,36 +209,129 @@ public:
   void setDetail(bool d) { _detail = d; }
 };
 
+/* ---------------------------------------------------------------- channels ---- */
+
+/* MeshCore has two messaging axes: direct messages to contacts, and posts to group
+   channels. The phone app exposes both, so the device UI has to as well. Channels are
+   stored in a fixed array with no public count, so they are enumerated by probing
+   indices until getChannel() fails. */
+
+class CJChannelsScreen : public CJListScreen {
+  UITask* _task;
+
+public:
+  CJChannelsScreen(UITask* task) : _task(task) { }
+
+  static int channelCount() {
+    ChannelDetails cd;
+    int n = 0;
+    for (int i = 0; i < MAX_GROUP_CHANNELS; i++) {
+      if (the_mesh.getChannel(i, cd) && cd.name[0] != 0) n++;
+    }
+    return n;
+  }
+
+  /* Maps a visible row back to a channel slot, skipping empty ones. */
+  static bool channelAt(int nth, ChannelDetails& dest) {
+    ChannelDetails cd;
+    int n = 0;
+    for (int i = 0; i < MAX_GROUP_CHANNELS; i++) {
+      if (!the_mesh.getChannel(i, cd) || cd.name[0] == 0) continue;
+      if (n == nth) { dest = cd; return true; }
+      n++;
+    }
+    return false;
+  }
+
+  bool getSelected(ChannelDetails& dest) { return channelAt(_sel, dest); }
+
+  int render(DisplayDriver& display) override {
+    int count = channelCount();
+    int rows = count + 1;
+    clampWindow(rows);
+    drawHeader(display, "Channels", count);
+
+    if (count == 0) {
+      drawEmpty(display, "none configured");
+    }
+
+    ChannelDetails cd;
+    for (int row = 0; row < CJ_MAX_VISIBLE; row++) {
+      int idx = _top + row;
+      if (idx >= rows) break;
+      if (idx == count) {
+        drawRow(display, row, "< Back", idx == _sel);
+        continue;
+      }
+      if (!channelAt(idx, cd)) continue;
+      char line[64];
+      sprintf(line, "#%.20s", cd.name);
+      drawRow(display, row, line, idx == _sel);
+    }
+    return 1000;
+  }
+
+  bool handleInput(char c) override;   // defined in UITask.cpp
+};
+
 /* ------------------------------------------------------------ send message ---- */
 
 class CJSendScreen : public CJListScreen {
+public:
+  enum Target { NONE, CONTACT, CHANNEL };
+
+private:
   UITask* _task;
   CannedStore* _canned;
   ContactInfo _recipient;
-  bool _have_recipient;
+  ChannelDetails _channel;
+  Target _target;
 
 public:
   CJSendScreen(UITask* task, CannedStore* canned)
-    : _task(task), _canned(canned), _have_recipient(false) { }
+    : _task(task), _canned(canned), _target(NONE) { }
 
   void setRecipient(const ContactInfo& c) {
     _recipient = c;
-    _have_recipient = true;
+    _target = CONTACT;
     _sel = 0;
     _top = 0;
   }
 
-  const char* recipientName() const { return _have_recipient ? _recipient.name : "?"; }
+  void setChannel(const ChannelDetails& ch) {
+    _channel = ch;
+    _target = CHANNEL;
+    _sel = 0;
+    _top = 0;
+  }
 
-  /* Returns one of MSG_SEND_FAILED / MSG_SEND_SENT_FLOOD / MSG_SEND_SENT_DIRECT. */
+  Target target() const { return _target; }
+
+  const char* recipientName() const {
+    if (_target == CONTACT) return _recipient.name;
+    if (_target == CHANNEL) return _channel.name;
+    return "?";
+  }
+
+  /* Returns MSG_SEND_FAILED / MSG_SEND_SENT_FLOOD / MSG_SEND_SENT_DIRECT.
+     Group posts have no per-recipient path, so a successful channel send is
+     reported as FLOOD -- which is what it actually is on the air. */
   int sendSelected() {
-    if (!_have_recipient) return MSG_SEND_FAILED;
     const char* text = _canned->get(_sel);
     if (text == NULL || *text == 0) return MSG_SEND_FAILED;
 
-    uint32_t expected_ack = 0, est_timeout = 0;
-    return the_mesh.sendMessage(_recipient, the_mesh.getRTCClock()->getCurrentTime(),
-                                0, text, expected_ack, est_timeout);
+    if (_target == CONTACT) {
+      uint32_t expected_ack = 0, est_timeout = 0;
+      return the_mesh.sendMessage(_recipient, the_mesh.getRTCClock()->getCurrentTime(),
+                                  0, text, expected_ack, est_timeout);
+    }
+    if (_target == CHANNEL) {
+      const char* self = the_mesh.getNodePrefs()->node_name;
+      bool ok = the_mesh.sendGroupMessage(the_mesh.getRTCClock()->getCurrentTime(),
+                                          _channel.channel, self, text, strlen(text));
+      return ok ? MSG_SEND_SENT_FLOOD : MSG_SEND_FAILED;
+    }
+    return MSG_SEND_FAILED;
   }
 
   int render(DisplayDriver& display) override {
@@ -245,7 +340,7 @@ public:
     clampWindow(rows);
 
     char hdr[40];
-    sprintf(hdr, "To %.18s", recipientName());
+    sprintf(hdr, _target == CHANNEL ? "To #%.17s" : "To %.18s", recipientName());
     drawHeader(display, hdr, count);
 
     for (int row = 0; row < CJ_MAX_VISIBLE; row++) {

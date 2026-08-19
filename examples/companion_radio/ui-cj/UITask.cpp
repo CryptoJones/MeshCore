@@ -94,6 +94,7 @@ class HomeScreen : public UIScreen {
     FIRST,
     RECENT,
     CONTACTS,     // ui-cj
+    CHANNELS,     // ui-cj
     MESSAGES,     // ui-cj
     RADIO,
     BLUETOOTH,
@@ -282,6 +283,14 @@ public:
       display.setTextSize(1);
       display.setColor(UIColor::secondary_txt);
       display.drawTextCentered(display.width() / 2, 43, "Contacts - press");
+    } else if (_page == HomePage::CHANNELS) {
+      display.setColor(UIColor::primary_txt);
+      display.setTextSize(2);
+      sprintf(tmp, "%d", CJChannelsScreen::channelCount());
+      display.drawTextCentered(display.width() / 2, 22, tmp);
+      display.setTextSize(1);
+      display.setColor(UIColor::secondary_txt);
+      display.drawTextCentered(display.width() / 2, 43, "Channels - press");
     } else if (_page == HomePage::MESSAGES) {
       display.setColor(UIColor::primary_txt);
       display.setTextSize(2);
@@ -468,6 +477,10 @@ public:
       _task->gotoContactsScreen();
       return true;
     }
+    if (c == KEY_ENTER && _page == HomePage::CHANNELS) {
+      _task->gotoChannelsScreen();
+      return true;
+    }
     if (c == KEY_ENTER && _page == HomePage::MESSAGES) {
       _task->gotoMsgLogScreen();
       return true;
@@ -649,6 +662,7 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
 
   _canned.begin(&store);
   cj_contacts = new CJContactsScreen(this);
+  cj_channels = new CJChannelsScreen(this);
   cj_msglog   = new CJMsgLogScreen(this, &_msglog);
   cj_send     = new CJSendScreen(this, &_canned);
 
@@ -700,7 +714,16 @@ void UITask::msgRead(int msgcount) {
 void UITask::newMsg(uint8_t path_len, const char* from_name, const char* text, int msgcount) {
   _msgcount = msgcount;
 
-  _msglog.add(path_len, from_name, text);
+  // MyMesh passes the channel name in the from_name slot for group messages, so the
+  // only way to distinguish a channel post from a DM here is to match the name against
+  // the channel list.
+  bool is_chan = false;
+  ChannelDetails cd;
+  for (int i = 0; i < MAX_GROUP_CHANNELS; i++) {
+    if (!the_mesh.getChannel(i, cd)) continue;
+    if (cd.name[0] != 0 && strcmp(cd.name, from_name) == 0) { is_chan = true; break; }
+  }
+  _msglog.add(path_len, from_name, text, is_chan);
   ((MsgPreviewScreen *) msg_preview)->addPreview(path_len, from_name, text);
   setCurrScreen(msg_preview);
 
@@ -1020,6 +1043,38 @@ void UITask::gotoContactsScreen() {
   setCurrScreen(cj_contacts);
 }
 
+void UITask::gotoChannelsScreen() {
+  setCurrScreen(cj_channels);
+}
+
+void UITask::gotoSendChannelScreen() {
+  ChannelDetails ch;
+  if (((CJChannelsScreen *) cj_channels)->getSelected(ch)) {
+    ((CJSendScreen *) cj_send)->setChannel(ch);
+    setCurrScreen(cj_send);
+  } else {
+    showAlert("No channels", 1000);
+    gotoHomeScreen();
+  }
+}
+
+bool CJChannelsScreen::handleInput(char c) {
+  int count = CJChannelsScreen::channelCount();
+  int rows = count + 1;
+
+  if (c == KEY_LEFT || c == KEY_PREV) { _sel--; clampWindow(rows); return true; }
+  if (c == KEY_RIGHT || c == KEY_NEXT) { _sel++; clampWindow(rows); return true; }
+  if (c == KEY_ENTER || c == KEY_SELECT) {
+    if (_sel >= count) {
+      _task->gotoHomeScreen();
+    } else {
+      _task->gotoSendChannelScreen();
+    }
+    return true;
+  }
+  return false;
+}
+
 void UITask::gotoMsgLogScreen() {
   ((CJMsgLogScreen *) cj_msglog)->reset();
   setCurrScreen(cj_msglog);
@@ -1097,8 +1152,12 @@ bool CJSendScreen::handleInput(char c) {
   if (c == KEY_LEFT || c == KEY_PREV) { _sel--; clampWindow(rows); return true; }
   if (c == KEY_RIGHT || c == KEY_NEXT) { _sel++; clampWindow(rows); return true; }
   if (c == KEY_ENTER || c == KEY_SELECT) {
-    if (_sel >= count) {                // Back row -- return to picking a recipient
-      _task->gotoContactsScreen();
+    if (_sel >= count) {                // Back row -- return to the list we came from
+      if (_target == CHANNEL) {
+        _task->gotoChannelsScreen();
+      } else {
+        _task->gotoContactsScreen();
+      }
       return true;
     }
     int result = sendSelected();

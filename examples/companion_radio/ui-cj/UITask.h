@@ -57,6 +57,7 @@ class UITask : public AbstractUITask {
 
   // ui-cj additions: on-device contact browsing, message reading, canned sending.
   UIScreen* cj_contacts;
+  UIScreen* cj_channels;
   UIScreen* cj_msglog;
   UIScreen* cj_send;
   MsgLog _msglog;
@@ -86,8 +87,10 @@ public:
   // ui-cj navigation. Screens are reached from home via UP (contacts) and DOWN
   // (messages); gotoSendScreen() is entered by selecting a contact.
   void gotoContactsScreen();
+  void gotoChannelsScreen();
   void gotoMsgLogScreen();
-  void gotoSendScreen();
+  void gotoSendScreen();          // to the selected contact
+  void gotoSendChannelScreen();   // to the selected channel
   MsgLog* getMsgLog() { return &_msglog; }
   CannedStore* getCanned() { return &_canned; }
   void showAlert(const char* text, int duration_millis);
