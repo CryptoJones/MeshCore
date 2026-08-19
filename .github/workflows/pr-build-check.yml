@@ -46,6 +46,11 @@ jobs:
           - wio_wm1110_repeater
           # SX1276 (ESP32)
           - Tbeam_SX1276_repeater
+          # Wio Tracker L1 (nRF52) -- the board this fork exists for. Neither the
+          # stock companion env nor the fork's dual-transport one was covered, so a
+          # break on the one board we actually ship for would not have been caught.
+          - WioTrackerL1_companion_radio_ble
+          - WioTrackerL1_companion_radio_usb_ble
 
     steps:
       - name: Clone Repo
