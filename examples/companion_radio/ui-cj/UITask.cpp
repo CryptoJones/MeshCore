@@ -57,18 +57,30 @@ class SplashScreen : public UIScreen {
   UITask* _task;
   unsigned long dismiss_after;
   char _version_info[12];
+#ifdef CJ_UI_VERSION
+  char _cj_info[28];
+#endif
 
 public:
   SplashScreen(UITask* task) : _task(task) {
-    // strip off dash and commit hash by changing dash to null terminator
-    // e.g: v1.2.3-abcdef -> v1.2.3
+    /* Upstream's splash strips everything after the first dash (v1.2.3-abcdef ->
+       v1.2.3). That base version tracks the UPSTREAM companion release this fork
+       branched from, so it does not move when ui-cj changes -- every build looked
+       identical on screen. Show the fork's own version alongside it, and keep the
+       commit hash so a build is still identifiable exactly. */
     const char *ver = FIRMWARE_VERSION;
     const char *dash = strchr(ver, '-');
-
     int len = dash ? dash - ver : strlen(ver);
-    if (len >= sizeof(_version_info)) len = sizeof(_version_info) - 1;
+    if (len >= (int) sizeof(_version_info)) len = sizeof(_version_info) - 1;
     memcpy(_version_info, ver, len);
     _version_info[len] = 0;
+
+#ifdef CJ_UI_VERSION
+    // Last dash-separated field of FIRMWARE_VERSION is the short commit hash.
+    const char *hash = strrchr(ver, '-');
+    snprintf(_cj_info, sizeof(_cj_info), "ui %s  %s",
+             CJ_UI_VERSION, (hash && hash != dash) ? hash + 1 : "");
+#endif
 
     dismiss_after = millis() + BOOT_SCREEN_MILLIS;
   }
@@ -94,7 +106,12 @@ public:
 
     display.setColor(UIColor::secondary_txt);
     display.setTextSize(1);
+#ifdef CJ_UI_VERSION
+    display.drawTextCentered(display.width()/2, 45, _cj_info);
+    display.drawTextCentered(display.width()/2, 55, FIRMWARE_BUILD_DATE);
+#else
     display.drawTextCentered(display.width()/2, 48, FIRMWARE_BUILD_DATE);
+#endif
 
     return 1000;
   }
